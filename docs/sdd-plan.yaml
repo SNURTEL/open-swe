@@ -110,10 +110,31 @@ sdd_formats:
       version: { type: "integer", minimum: 1 }
 
 next_steps:
-  - "add SDD schema and storage adapter"
-  - "introduce strict format serializers and validators"
-  - "wire SDD generation and persistence into GitHub issue flow"
-  - "add CI-fix loop"
-  - "remove Linear and managed sandbox providers"
-  - "update docs, env defaults, and deployment manifests"
-  - "run lint/tests and stabilize"
+  - step_id: "step-1"
+    title: "add SDD schema and storage adapter"
+    priority: "high"
+    depends_on: []
+  - step_id: "step-2"
+    title: "introduce strict format serializers and validators"
+    priority: "high"
+    depends_on: ["step-1"]
+  - step_id: "step-3"
+    title: "wire SDD generation and persistence into GitHub issue flow"
+    priority: "high"
+    depends_on: ["step-1", "step-2"]
+  - step_id: "step-4"
+    title: "add CI-fix loop"
+    priority: "medium"
+    depends_on: ["step-3"]
+  - step_id: "step-5"
+    title: "remove Linear and managed sandbox providers"
+    priority: "high"
+    depends_on: ["step-3"]
+  - step_id: "step-6"
+    title: "update docs, env defaults, and deployment manifests"
+    priority: "medium"
+    depends_on: ["step-4", "step-5"]
+  - step_id: "step-7"
+    title: "run lint/tests and stabilize"
+    priority: "high"
+    depends_on: ["step-6"]

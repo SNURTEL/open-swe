@@ -2,7 +2,7 @@
 
 ## Goals
 
-- Implement issue-comment mention (`@openswe` / `@open-swe`) as the trigger for SDD runs.
+- Implement issue-thread mention triggers; both `@openswe` and `@open-swe` are valid.
 - Add structured SDD lifecycle: **Spec → Plan → Subtasks → Execution → Test → PR → CI autofix**.
 - Keep **LangGraph** orchestration while removing hosted/proprietary runtime coupling.
 - Support **GitHub.com + GitHub Enterprise**, **Slack**, **PostgreSQL/SQLite**, and sandbox types:
@@ -15,8 +15,8 @@
 
 - Add a storage module with a SQL backend selected by `DATABASE_URL`.
   - SQLite DSN supports relative and absolute paths (`sqlite:///relative.db`, `sqlite:////abs/path.db`).
-    - In `sqlite:///...`, the three slashes belong to the URI prefix and path is relative.
-    - In `sqlite:////...`, the fourth slash is the absolute filesystem root slash.
+    - `sqlite:///relative.db` uses an empty host with a relative path segment.
+    - `sqlite:////abs/path.db` uses an empty host and an absolute path (`/abs/path.db`).
   - PostgreSQL DSN uses `postgresql+psycopg://...`.
 - Persist SDD entities:
   - `sdd_specs`
