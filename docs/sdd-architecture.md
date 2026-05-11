@@ -15,6 +15,8 @@
 
 - Add a storage module with a SQL backend selected by `DATABASE_URL`.
   - SQLite DSN supports relative and absolute paths (`sqlite:///relative.db`, `sqlite:////abs/path.db`).
+    - In `sqlite:///...`, the three slashes belong to the URI prefix and path is relative.
+    - In `sqlite:////...`, the fourth slash is the absolute filesystem root slash.
   - PostgreSQL DSN uses `postgresql+psycopg://...`.
 - Persist SDD entities:
   - `sdd_specs`

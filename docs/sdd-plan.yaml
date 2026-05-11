@@ -110,8 +110,10 @@ sdd_formats:
       version: { type: "integer", minimum: 1 }
 
 next_steps:
-  - "implement SQL storage and migrations"
-  - "wire SDD generation/execution into GitHub issue runs"
-  - "add docker-container and k8s-pod sandbox providers"
+  - "add SDD schema and storage adapter"
+  - "introduce strict format serializers and validators"
+  - "wire SDD generation and persistence into GitHub issue flow"
+  - "add CI-fix loop"
   - "remove Linear and managed sandbox providers"
-  - "add CI-failure monitor and bounded fix rounds"
+  - "update docs, env defaults, and deployment manifests"
+  - "run lint/tests and stabilize"
