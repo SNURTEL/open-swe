@@ -1318,6 +1318,21 @@ def build_github_issue_update_prompt(github_login: str, title: str, body: str) -
     )
 
 
+def _slug(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.lower())
+
+
+def generate_sdd_ids(repo_config: dict[str, str], issue_number: int) -> tuple[str, str, str]:
+    owner = _slug(repo_config.get("owner", "repo-owner"))
+    repo = _slug(repo_config.get("name", "repo-name"))
+    suffix = f"{owner}-{repo}-{issue_number}"
+    return (f"spec-{suffix}", f"plan-{suffix}", f"subtasks-{suffix}")
+
+
+def generate_run_id(thread_id: str) -> str:
+    return f"run-{thread_id}-{uuid.uuid4().hex[:8]}"
+
+
 async def _trigger_or_queue_run(
     thread_id: str,
     prompt: str,
@@ -1328,7 +1343,7 @@ async def _trigger_or_queue_run(
     pr_number: int,
 ) -> None:
     """Create a new agent run or queue the message if the thread is busy."""
-    run_id = f"run-{thread_id}"
+    run_id = generate_run_id(thread_id)
     thread_active = await is_thread_active(thread_id)
     if thread_active:
         logger.info("Thread %s is busy, queuing GitHub PR comment message", thread_id)
@@ -2275,9 +2290,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
             )
             comments.sort(key=lambda item: item.get("created_at", ""))
 
-        spec_id = f"spec-{repo_config['owner']}-{repo_config['name']}-{issue_number}"
-        plan_id = f"plan-{repo_config['owner']}-{repo_config['name']}-{issue_number}"
-        subtasks_id = f"subtasks-{repo_config['owner']}-{repo_config['name']}-{issue_number}"
+        spec_id, plan_id, subtasks_id = generate_sdd_ids(repo_config, issue_number)
         issue_ref = {
             "provider": "github",
             "owner": repo_config["owner"],
@@ -2342,7 +2355,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         return
 
     logger.info("Creating LangGraph run for thread %s from GitHub issue", thread_id)
-    run_id = f"run-{thread_id}"
+    run_id = generate_run_id(thread_id)
     save_run(
         run_id=run_id,
         thread_id=thread_id,

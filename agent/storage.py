@@ -22,7 +22,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import SQLAlchemyError
 
 metadata = MetaData()
 
@@ -91,10 +90,14 @@ def get_engine() -> Engine:
 
 def _serialize_payload(payload: dict[str, Any]) -> Any:
     # SQLite Text fallback needs string payload.
-    engine = get_engine()
-    if engine.dialect.name == "sqlite":
+    if _is_sqlite():
         return json.dumps(payload)
     return payload
+
+
+@lru_cache(maxsize=1)
+def _is_sqlite() -> bool:
+    return get_engine().dialect.name == "sqlite"
 
 
 def _deserialize_payload(payload: Any) -> dict[str, Any]:
@@ -235,7 +238,7 @@ def increment_ci_fix_rounds(run_id: str) -> int:
     with engine.begin() as conn:
         row = conn.execute(select(sdd_runs).where(sdd_runs.c.run_id == run_id)).mappings().first()
         if not row:
-            raise SQLAlchemyError(f"Run not found: {run_id}")
+            raise ValueError(f"Run not found: {run_id}")
         current = int(row.get("ci_fix_rounds") or 0)
         new_value = current + 1
         conn.execute(
