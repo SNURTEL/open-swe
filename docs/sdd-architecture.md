@@ -5,7 +5,7 @@
 - Implement issue-comment mention (`@openswe` / `@open-swe`) as the trigger for SDD runs.
 - Add structured SDD lifecycle: **Spec → Plan → Subtasks → Execution → Test → PR → CI autofix**.
 - Keep **LangGraph** orchestration while removing hosted/proprietary runtime coupling.
-- Support **GitHub.com + GitHub Enterprise**, **Slack**, **Postgres/SQLite**, and sandbox types:
+- Support **GitHub.com + GitHub Enterprise**, **Slack**, **PostgreSQL/SQLite**, and sandbox types:
   - `SANDBOX_TYPE=docker-container`
   - `SANDBOX_TYPE=k8s-pod`
 
@@ -14,7 +14,8 @@
 ### 1) Persistence Layer (SQL, Postgres/SQLite)
 
 - Add a storage module with a SQL backend selected by `DATABASE_URL`.
-  - `sqlite:///...` and `postgresql+psycopg://...` are both supported.
+  - SQLite DSN supports relative and absolute paths (`sqlite:///relative.db`, `sqlite:////abs/path.db`).
+  - PostgreSQL DSN uses `postgresql+psycopg://...`.
 - Persist SDD entities:
   - `sdd_specs`
   - `sdd_plans`
@@ -68,7 +69,7 @@
 - Host mode: `uvicorn agent.webapp:app` or `langgraph dev`.
 - Container mode:
   - Application container.
-  - Optional Postgres service.
+  - Optional PostgreSQL service.
   - Optional OTEL collector / Prometheus scrape endpoint.
 
 ## Migration Strategy
