@@ -43,7 +43,7 @@ class K8sPodSandbox(BaseSandbox):
 
 
 def _create_pod(image: str, namespace: str) -> str:
-    pod_name = f"open-swe-{uuid.uuid4().hex}"
+    pod_name = f"open-swe-{uuid.uuid4().hex[:16]}"
     create = subprocess.run(
         [
             "kubectl",

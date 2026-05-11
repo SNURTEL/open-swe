@@ -1329,7 +1329,7 @@ def generate_sdd_ids(repo_config: dict[str, str], issue_number: int) -> tuple[st
     return (f"spec-{suffix}", f"plan-{suffix}", f"subtasks-{suffix}")
 
 
-def generate_run_id(thread_id: str) -> str:
+def generate_thread_scoped_run_id(thread_id: str) -> str:
     return f"run-{thread_id}-{uuid.uuid4().hex[:8]}"
 
 
@@ -1343,7 +1343,7 @@ async def _trigger_or_queue_run(
     pr_number: int,
 ) -> None:
     """Create a new agent run or queue the message if the thread is busy."""
-    run_id = generate_run_id(thread_id)
+    run_id = generate_thread_scoped_run_id(thread_id)
     thread_active = await is_thread_active(thread_id)
     if thread_active:
         logger.info("Thread %s is busy, queuing GitHub PR comment message", thread_id)
@@ -2355,7 +2355,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         return
 
     logger.info("Creating LangGraph run for thread %s from GitHub issue", thread_id)
-    run_id = generate_run_id(thread_id)
+    run_id = generate_thread_scoped_run_id(thread_id)
     save_run(
         run_id=run_id,
         thread_id=thread_id,

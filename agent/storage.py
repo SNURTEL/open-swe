@@ -97,6 +97,7 @@ def _serialize_payload(payload: dict[str, Any]) -> Any:
 
 @lru_cache(maxsize=1)
 def _is_sqlite() -> bool:
+    # DATABASE_URL is treated as process-static; changing it requires restart.
     return get_engine().dialect.name == "sqlite"
 
 

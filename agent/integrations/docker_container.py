@@ -39,7 +39,7 @@ class DockerContainerSandbox(BaseSandbox):
 
 
 def _create_container(image: str) -> str:
-    name = f"open-swe-{uuid.uuid4().hex}"
+    name = f"open-swe-{uuid.uuid4().hex[:16]}"
     proc = subprocess.run(
         [
             "docker",
