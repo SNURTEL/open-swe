@@ -1,7 +1,14 @@
 """Sandbox provider integrations."""
 
-from deepagents.backends import LangSmithSandbox
+from agent.integrations.docker_container import (
+    DockerContainerSandbox,
+    create_docker_container_sandbox,
+)
+from agent.integrations.k8s_pod import K8sPodSandbox, create_k8s_pod_sandbox
 
-from agent.integrations.langsmith import LangSmithProvider
-
-__all__ = ["LangSmithProvider", "LangSmithSandbox"]
+__all__ = [
+    "DockerContainerSandbox",
+    "K8sPodSandbox",
+    "create_docker_container_sandbox",
+    "create_k8s_pod_sandbox",
+]

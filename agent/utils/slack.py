@@ -17,8 +17,6 @@ from urllib.parse import urlparse
 import httpx
 from langgraph_sdk.client import LangGraphClient
 
-from agent.utils.langsmith import get_langsmith_trace_url
-
 logger = logging.getLogger(__name__)
 
 SLACK_API_BASE_URL = "https://slack.com/api"
@@ -699,12 +697,10 @@ TRACE_REPLY_TIPS: tuple[str, ...] = (
     "I'll open a draft PR automatically when I'm done and link it back here.",
     "Tag me on a PR comment of an open-swe PR to have me address review feedback on the same branch.",
     "I can spawn subagents for independent subtasks — useful for parallel research or fan-out work.",
-    "Click `View trace` above to watch every tool call and model response live in LangSmith.",
     "React to my final reply with :+1: or :-1: to share feedback — it helps me get better.",
     "Send me `review <github-pr-url>` in Slack and I'll spin up the reviewer agent to leave inline comments on that PR.",
     "Pasting a GitHub URL into your message also works to point me at a repo — no `repo:` prefix needed.",
-    "Attach screenshots or images directly in Slack or Linear — I'll read them as part of the task context.",
-    "Tag `@openswe` on a Linear issue and I'll pull in the full title, description, and comment thread before starting.",
+    "Attach screenshots or images directly in Slack — I'll read them as part of the task context.",
     "I also pick up `@openswe` mentions in GitHub issue bodies and comments — not just on PRs.",
     "On a GitHub PR, comment `@open-swe review` to trigger the reviewer agent and get inline review comments.",
     "Each thread keeps a persistent sandbox — follow-up runs reuse the same workspace, so my context sticks around.",
@@ -715,14 +711,14 @@ TRACE_REPLY_TIPS: tuple[str, ...] = (
 
 
 def _format_trace_reply(trace_url: str | None) -> str:
-    """Format the initial trace reply with a randomly selected tip."""
+    """Format the initial status reply with a randomly selected tip."""
     tip = random.choice(TRACE_REPLY_TIPS)
     head = f"<{trace_url}|View trace>\n" if trace_url else ""
     return f"{head}_Tip: {tip}_"
 
 
 async def post_slack_trace_reply(channel_id: str, thread_ts: str, thread_id: str) -> str | None:
-    """Post a trace URL reply in a Slack thread and return its Slack timestamp."""
+    """Post an initial status reply in a Slack thread and return its timestamp."""
     trace_url = get_langsmith_trace_url(thread_id)
     return await post_slack_thread_reply_with_ts(
         channel_id,
@@ -859,3 +855,15 @@ async def lookup_run_id_for_slack_message(
         return None
     run_id = value.get("run_id")
     return run_id if isinstance(run_id, str) and run_id else None
+
+
+def get_langsmith_trace_url(thread_id: str) -> str | None:
+    """Backward-compatible trace URL hook.
+
+    Returns None by default. Deployments can override via monkeypatch/tests or
+    by setting OPEN_SWE_TRACE_BASE_URL.
+    """
+    base_url = os.environ.get("OPEN_SWE_TRACE_BASE_URL", "").strip()
+    if not base_url:
+        return None
+    return f"{base_url.rstrip('/')}/{thread_id}"

@@ -74,7 +74,7 @@ ENV PATH=/usr/local/go/bin:/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/
 ENV GOPATH=/root/go
 ENV PATH=/root/go/bin:/usr/local/go/bin:/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-WORKDIR /workspace
+WORKDIR /app
 
 RUN echo "=== Installed versions ===" \
     && python --version \
@@ -85,3 +85,11 @@ RUN echo "=== Installed versions ===" \
     && docker --version \
     && git --version \
     && gh --version
+
+COPY . /app
+
+RUN uv pip install --system -e .
+
+EXPOSE 8000
+
+CMD ["uv", "run", "uvicorn", "agent.webapp:app", "--host", "0.0.0.0", "--port", "8000"]

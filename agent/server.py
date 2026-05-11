@@ -43,13 +43,6 @@ from .prompt import construct_system_prompt
 from .tools import (
     fetch_url,
     http_request,
-    linear_comment,
-    linear_create_issue,
-    linear_delete_issue,
-    linear_get_issue,
-    linear_get_issue_comments,
-    linear_list_teams,
-    linear_update_issue,
     request_pr_review,
     slack_read_thread_messages,
     slack_thread_reply,
@@ -351,10 +344,6 @@ async def get_agent(config: RunnableConfig) -> Pregel:
 
     sandbox_backend = await ensure_sandbox_for_thread(thread_id)
 
-    linear_issue = config["configurable"].get("linear_issue", {})
-    linear_project_id = linear_issue.get("linear_project_id", "")
-    linear_issue_number = linear_issue.get("linear_issue_number", "")
-
     work_dir = await aresolve_sandbox_work_dir(sandbox_backend)
 
     def backend_factory(_runtime: object, _thread_id: str = thread_id) -> SandboxBackendProtocol:
@@ -381,21 +370,12 @@ async def get_agent(config: RunnableConfig) -> Pregel:
         model=make_model(model_id, **model_kwargs),
         system_prompt=construct_system_prompt(
             working_dir=work_dir,
-            linear_project_id=linear_project_id,
-            linear_issue_number=linear_issue_number,
             triggering_user_identity=triggering_user_identity,
         ),
         tools=[
             http_request,
             fetch_url,
             web_search,
-            linear_comment,
-            linear_create_issue,
-            linear_delete_issue,
-            linear_get_issue,
-            linear_get_issue_comments,
-            linear_list_teams,
-            linear_update_issue,
             request_pr_review,
             slack_read_thread_messages,
             slack_thread_reply,

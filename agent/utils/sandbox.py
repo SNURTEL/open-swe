@@ -1,16 +1,12 @@
 import os
 
-from agent.integrations.daytona import create_daytona_sandbox
-from agent.integrations.langsmith import create_langsmith_sandbox
+from agent.integrations.docker_container import create_docker_container_sandbox
+from agent.integrations.k8s_pod import create_k8s_pod_sandbox
 from agent.integrations.local import create_local_sandbox
-from agent.integrations.modal import create_modal_sandbox
-from agent.integrations.runloop import create_runloop_sandbox
 
 SANDBOX_FACTORIES = {
-    "langsmith": create_langsmith_sandbox,
-    "daytona": create_daytona_sandbox,
-    "modal": create_modal_sandbox,
-    "runloop": create_runloop_sandbox,
+    "docker-container": create_docker_container_sandbox,
+    "k8s-pod": create_k8s_pod_sandbox,
     "local": create_local_sandbox,
 }
 
@@ -19,7 +15,7 @@ def create_sandbox(sandbox_id: str | None = None):
     """Create or reconnect to a sandbox using the configured provider.
 
     The provider is selected via the SANDBOX_TYPE environment variable.
-    Supported values: langsmith (default), daytona, modal, runloop, local.
+    Supported values: docker-container (default), k8s-pod, local.
 
     Args:
         sandbox_id: Optional existing sandbox ID to reconnect to.
@@ -27,7 +23,7 @@ def create_sandbox(sandbox_id: str | None = None):
     Returns:
         A sandbox backend implementing SandboxBackendProtocol.
     """
-    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
+    sandbox_type = os.getenv("SANDBOX_TYPE", "docker-container")
     factory = SANDBOX_FACTORIES.get(sandbox_type)
     if not factory:
         supported = ", ".join(sorted(SANDBOX_FACTORIES))
@@ -42,8 +38,7 @@ def validate_sandbox_startup_config() -> None:
     Called from the FastAPI lifespan hook so errors surface at boot rather
     than on the first sandbox creation.
     """
-    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
-    if sandbox_type == "langsmith":
-        from agent.integrations.langsmith import LangSmithProvider
-
-        LangSmithProvider.validate_startup_config()
+    sandbox_type = os.getenv("SANDBOX_TYPE", "docker-container")
+    if sandbox_type not in SANDBOX_FACTORIES:
+        supported = ", ".join(sorted(SANDBOX_FACTORIES))
+        raise ValueError(f"Invalid sandbox type: {sandbox_type}. Supported types: {supported}")
