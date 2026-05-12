@@ -19,6 +19,7 @@ from .config import get_settings
 logger = logging.getLogger(__name__)
 _OBSERVABILITY_INITIALIZED = False
 _LANGFUSE_CLIENT: Langfuse | None = None
+_TRACER = trace.get_tracer("open_swe.webapp")
 
 
 def _parse_otlp_headers(headers: str | None) -> dict[str, str]:
@@ -87,8 +88,7 @@ def init_observability(app: FastAPI | None = None) -> None:
 
 @contextmanager
 def start_trace_span(name: str, attributes: dict[str, Any] | None = None) -> Iterator[None]:
-    tracer = trace.get_tracer("open_swe.webapp")
-    with tracer.start_as_current_span(name) as span:
+    with _TRACER.start_as_current_span(name) as span:
         for key, value in (attributes or {}).items():
             span.set_attribute(key, value)
         yield
