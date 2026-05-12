@@ -28,6 +28,7 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langsmith.sandbox import SandboxClientError
 
+from .config import get_settings
 from .integrations.langsmith import _configure_github_proxy
 from .middleware import (
     ModelFallbackMiddleware,
@@ -66,7 +67,7 @@ from .utils.sandbox_state import SANDBOX_BACKENDS, get_sandbox_id_from_metadata
 
 async def _start_langsmith_sandbox_if_needed(sandbox_backend: SandboxBackendProtocol) -> None:
     """Start a LangSmith sandbox before operations that require it to be running."""
-    if os.getenv("SANDBOX_TYPE", "langsmith") != "langsmith":
+    if get_settings().sandbox_type != "langsmith":
         return
     if not isinstance(sandbox_backend, LangSmithSandbox):
         return
@@ -95,7 +96,7 @@ async def _create_sandbox_with_proxy() -> SandboxBackendProtocol:
     """
     sandbox_backend = await asyncio.to_thread(create_sandbox)
 
-    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
+    sandbox_type = get_settings().sandbox_type
     if sandbox_type == "langsmith":
         installation_token = await get_github_app_installation_token()
         if not installation_token:
@@ -112,7 +113,7 @@ async def _refresh_github_proxy(
     sandbox_backend: SandboxBackendProtocol,
 ) -> None:
     """Refresh GitHub proxy credentials for reused LangSmith sandboxes."""
-    if os.getenv("SANDBOX_TYPE", "langsmith") != "langsmith":
+    if get_settings().sandbox_type != "langsmith":
         return
 
     installation_token = await get_github_app_installation_token()

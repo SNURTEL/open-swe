@@ -16,7 +16,9 @@ from langchain_core.messages.content import create_text_block
 from langgraph_sdk import get_client
 from langgraph_sdk.client import LangGraphClient
 
+from .config import get_settings
 from .metrics import metrics_response, observe_ci_fix_round, observe_sdd_run_transition
+from .observability import init_observability, record_langfuse_event, start_trace_span
 from .reviewer_findings import (
     REVIEWER_THREAD_KIND,
     ReviewerPRMeta,
@@ -98,6 +100,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     validate_sandbox_startup_config()
     init_storage()
+    init_observability(_app)
     yield
 
 
@@ -1333,6 +1336,49 @@ def generate_thread_scoped_run_id(thread_id: str) -> str:
     return f"run-{thread_id}-{uuid.uuid4().hex[:8]}"
 
 
+def persist_run_state(
+    *,
+    run_id: str,
+    thread_id: str,
+    source: str,
+    status: str,
+    repo_owner: str,
+    repo_name: str,
+    issue_number: int | None = None,
+    pr_number: int | None = None,
+    ci_fix_rounds: int = 0,
+    metadata_json: dict[str, Any] | None = None,
+) -> None:
+    save_run(
+        run_id=run_id,
+        thread_id=thread_id,
+        source=source,
+        status=status,
+        repo_owner=repo_owner,
+        repo_name=repo_name,
+        issue_number=issue_number,
+        pr_number=pr_number,
+        ci_fix_rounds=ci_fix_rounds,
+        metadata_json=metadata_json,
+    )
+    observe_sdd_run_transition(source, status)
+    record_langfuse_event(
+        name="open_swe_run_state",
+        input_payload={
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "source": source,
+            "status": status,
+            "repo_owner": repo_owner,
+            "repo_name": repo_name,
+            "issue_number": issue_number,
+            "pr_number": pr_number,
+            "ci_fix_rounds": ci_fix_rounds,
+        },
+        metadata=metadata_json or {},
+    )
+
+
 async def _trigger_or_queue_run(
     thread_id: str,
     prompt: str,
@@ -1343,54 +1389,61 @@ async def _trigger_or_queue_run(
     pr_number: int,
 ) -> None:
     """Create a new agent run or queue the message if the thread is busy."""
-    run_id = generate_thread_scoped_run_id(thread_id)
-    thread_active = await is_thread_active(thread_id)
-    if thread_active:
-        logger.info("Thread %s is busy, queuing GitHub PR comment message", thread_id)
-        await queue_message_for_thread(thread_id, prompt)
-        save_run(
+    with start_trace_span(
+        "trigger_or_queue_run",
+        {
+            "thread.id": thread_id,
+            "github.pr_number": pr_number,
+            "repo.owner": repo_config["owner"],
+            "repo.name": repo_config["name"],
+        },
+    ):
+        run_id = generate_thread_scoped_run_id(thread_id)
+        thread_active = await is_thread_active(thread_id)
+        if thread_active:
+            logger.info("Thread %s is busy, queuing GitHub PR comment message", thread_id)
+            await queue_message_for_thread(thread_id, prompt)
+            persist_run_state(
+                run_id=run_id,
+                thread_id=thread_id,
+                source="github",
+                status="queued",
+                repo_owner=repo_config["owner"],
+                repo_name=repo_config["name"],
+                pr_number=pr_number,
+                metadata_json={"reason": "thread_busy"},
+            )
+            return
+
+        logger.info("Creating LangGraph run for thread %s from GitHub PR comment", thread_id)
+        langgraph_client = get_client(url=LANGGRAPH_URL)
+        persist_run_state(
             run_id=run_id,
             thread_id=thread_id,
             source="github",
-            status="queued",
+            status="running",
             repo_owner=repo_config["owner"],
             repo_name=repo_config["name"],
             pr_number=pr_number,
-            metadata_json={"reason": "thread_busy"},
+            metadata_json={"reason": "pr_comment"},
         )
-        observe_sdd_run_transition("github", "queued")
-        return
-
-    logger.info("Creating LangGraph run for thread %s from GitHub PR comment", thread_id)
-    langgraph_client = get_client(url=LANGGRAPH_URL)
-    save_run(
-        run_id=run_id,
-        thread_id=thread_id,
-        source="github",
-        status="running",
-        repo_owner=repo_config["owner"],
-        repo_name=repo_config["name"],
-        pr_number=pr_number,
-        metadata_json={"reason": "pr_comment"},
-    )
-    observe_sdd_run_transition("github", "running")
-    await langgraph_client.runs.create(
-        thread_id,
-        "agent",
-        input={"messages": [{"role": "user", "content": prompt}]},
-        config={
-            "configurable": {
-                "source": "github",
-                "github_login": github_login,
-                "github_user_id": github_user_id,
-                "repo": repo_config,
-                "pr_number": pr_number,
+        await langgraph_client.runs.create(
+            thread_id,
+            "agent",
+            input={"messages": [{"role": "user", "content": prompt}]},
+            config={
+                "configurable": {
+                    "source": "github",
+                    "github_login": github_login,
+                    "github_user_id": github_user_id,
+                    "repo": repo_config,
+                    "pr_number": pr_number,
+                },
+                "metadata": _AGENT_VERSION_METADATA,
             },
-            "metadata": _AGENT_VERSION_METADATA,
-        },
-        if_not_exists="create",
-    )
-    logger.info("LangGraph run created for thread %s from GitHub PR comment", thread_id)
+            if_not_exists="create",
+        )
+        logger.info("LangGraph run created for thread %s from GitHub PR comment", thread_id)
 
 
 def _is_open_swe_reviewer_request(payload: dict[str, Any]) -> bool:
@@ -1947,78 +2000,78 @@ async def process_github_push_event(payload: dict[str, Any]) -> None:
 
 async def process_github_check_suite(payload: dict[str, Any]) -> None:
     """Trigger bounded CI auto-fix rounds for agent-created PRs."""
-    check_suite = payload.get("check_suite", {})
-    if check_suite.get("conclusion") != "failure":
-        return
+    with start_trace_span("process_github_check_suite"):
+        check_suite = payload.get("check_suite", {})
+        if check_suite.get("conclusion") != "failure":
+            return
 
-    pull_requests = check_suite.get("pull_requests") or []
-    if not pull_requests:
-        return
-    pr_ref = pull_requests[0]
-    pr_number = pr_ref.get("number")
-    if not isinstance(pr_number, int):
-        return
+        pull_requests = check_suite.get("pull_requests") or []
+        if not pull_requests:
+            return
+        pr_ref = pull_requests[0]
+        pr_number = pr_ref.get("number")
+        if not isinstance(pr_number, int):
+            return
 
-    repo = payload.get("repository", {})
-    repo_owner = repo.get("owner", {}).get("login", "")
-    repo_name = repo.get("name", "")
-    if not repo_owner or not repo_name:
-        return
+        repo = payload.get("repository", {})
+        repo_owner = repo.get("owner", {}).get("login", "")
+        repo_name = repo.get("name", "")
+        if not repo_owner or not repo_name:
+            return
 
-    latest = get_latest_run_for_pr(repo_owner, repo_name, pr_number)
-    if not latest:
-        logger.info(
-            "Skipping CI auto-fix for %s/%s#%s: no tracked run",
-            repo_owner,
-            repo_name,
-            pr_number,
+        latest = get_latest_run_for_pr(repo_owner, repo_name, pr_number)
+        if not latest:
+            logger.info(
+                "Skipping CI auto-fix for %s/%s#%s: no tracked run",
+                repo_owner,
+                repo_name,
+                pr_number,
+            )
+            return
+
+        max_rounds = get_settings().max_ci_fix_rounds
+        run_id = str(latest.get("run_id"))
+        current_rounds = int(latest.get("ci_fix_rounds") or 0)
+        if current_rounds >= max_rounds:
+            logger.info(
+                "Skipping CI auto-fix for %s/%s#%s: reached max rounds (%s)",
+                repo_owner,
+                repo_name,
+                pr_number,
+                max_rounds,
+            )
+            return
+
+        thread_id = str(latest.get("thread_id") or "")
+        if not thread_id:
+            return
+
+        ci_url = check_suite.get("html_url") or ""
+        fix_prompt = (
+            f"CI failed for PR #{pr_number}. Analyze failure details and apply a fix. "
+            f"Run lint/tests relevant to the failure and update the PR. CI URL: {ci_url}"
         )
-        return
-
-    max_rounds = int(os.getenv("MAX_CI_FIX_ROUNDS", "2"))
-    run_id = str(latest.get("run_id"))
-    current_rounds = int(latest.get("ci_fix_rounds") or 0)
-    if current_rounds >= max_rounds:
-        logger.info(
-            "Skipping CI auto-fix for %s/%s#%s: reached max rounds (%s)",
-            repo_owner,
-            repo_name,
-            pr_number,
-            max_rounds,
+        rounds = increment_ci_fix_rounds(run_id)
+        observe_ci_fix_round(repo_owner, repo_name)
+        persist_run_state(
+            run_id=run_id,
+            thread_id=thread_id,
+            source="github",
+            status="ci_fixing",
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            pr_number=pr_number,
+            ci_fix_rounds=rounds,
+            metadata_json={"check_suite_id": check_suite.get("id"), "ci_url": ci_url},
         )
-        return
-
-    thread_id = str(latest.get("thread_id") or "")
-    if not thread_id:
-        return
-
-    ci_url = check_suite.get("html_url") or ""
-    fix_prompt = (
-        f"CI failed for PR #{pr_number}. Analyze failure details and apply a fix. "
-        f"Run lint/tests relevant to the failure and update the PR. CI URL: {ci_url}"
-    )
-    rounds = increment_ci_fix_rounds(run_id)
-    observe_ci_fix_round(repo_owner, repo_name)
-    observe_sdd_run_transition("github", "ci_fixing")
-    save_run(
-        run_id=run_id,
-        thread_id=thread_id,
-        source="github",
-        status="ci_fixing",
-        repo_owner=repo_owner,
-        repo_name=repo_name,
-        pr_number=pr_number,
-        ci_fix_rounds=rounds,
-        metadata_json={"check_suite_id": check_suite.get("id"), "ci_url": ci_url},
-    )
-    await _trigger_or_queue_run(
-        thread_id,
-        fix_prompt,
-        github_login=payload.get("sender", {}).get("login", "") or "open-swe[bot]",
-        github_user_id=payload.get("sender", {}).get("id"),
-        repo_config={"owner": repo_owner, "name": repo_name},
-        pr_number=pr_number,
-    )
+        await _trigger_or_queue_run(
+            thread_id,
+            fix_prompt,
+            github_login=payload.get("sender", {}).get("login", "") or "open-swe[bot]",
+            github_user_id=payload.get("sender", {}).get("id"),
+            repo_config={"owner": repo_owner, "name": repo_name},
+            pr_number=pr_number,
+        )
 
 
 async def _refresh_thread_github_token_after_401(thread_id: str, email: str) -> str | None:
@@ -2305,8 +2358,16 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
             issue_body=description,
             comments=comments,
         )
-        plan_payload = build_sdd_plan(plan_id=plan_id, spec_id=spec_id)
-        subtasks_payload = build_sdd_subtasks(subtasks_id=subtasks_id, plan_id=plan_id)
+        plan_payload = build_sdd_plan(
+            plan_id=plan_id,
+            spec_id=spec_id,
+            spec_payload=spec_payload,
+        )
+        subtasks_payload = build_sdd_subtasks(
+            subtasks_id=subtasks_id,
+            plan_id=plan_id,
+            plan_payload=plan_payload,
+        )
         save_spec(
             spec_id=spec_id,
             thread_id=thread_id,
@@ -2356,7 +2417,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
 
     logger.info("Creating LangGraph run for thread %s from GitHub issue", thread_id)
     run_id = generate_thread_scoped_run_id(thread_id)
-    save_run(
+    persist_run_state(
         run_id=run_id,
         thread_id=thread_id,
         source="github",
@@ -2366,7 +2427,6 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         issue_number=issue_number,
         metadata_json={"event_type": event_type},
     )
-    observe_sdd_run_transition("github", "queued")
     langgraph_client = get_client(url=LANGGRAPH_URL)
     await langgraph_client.runs.create(
         thread_id,
@@ -2375,7 +2435,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         config={"configurable": configurable, "metadata": _AGENT_VERSION_METADATA},
         if_not_exists="create",
     )
-    save_run(
+    persist_run_state(
         run_id=run_id,
         thread_id=thread_id,
         source="github",
@@ -2385,7 +2445,6 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         issue_number=issue_number,
         metadata_json={"event_type": event_type},
     )
-    observe_sdd_run_transition("github", "running")
     logger.info("LangGraph run created for thread %s from GitHub issue", thread_id)
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
@@ -23,7 +22,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Engine
 
+from .config import get_settings
+
 metadata = MetaData()
+_STORAGE_INITIALIZED = False
 
 sdd_specs = Table(
     "sdd_specs",
@@ -84,7 +86,7 @@ def _normalize_database_url(url: str) -> str:
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
-    database_url = _normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///open_swe.db"))
+    database_url = _normalize_database_url(get_settings().database_url)
     return create_engine(database_url, future=True)
 
 
@@ -113,24 +115,17 @@ def _deserialize_payload(payload: Any) -> dict[str, Any]:
 
 
 def init_storage() -> None:
+    global _STORAGE_INITIALIZED
+    if _STORAGE_INITIALIZED:
+        return
     engine = get_engine()
     metadata.create_all(engine)
+    _STORAGE_INITIALIZED = True
 
 
-def _upsert(table: Table, row: dict[str, Any], key_column: str) -> None:
-    now = datetime.now(UTC)
-    row.setdefault("created_at", now)
-    row["updated_at"] = now
-    engine = get_engine()
-    key = row[key_column]
-    with engine.begin() as conn:
-        existing = conn.execute(
-            select(table.c[key_column]).where(table.c[key_column] == key)
-        ).first()
-        if existing:
-            conn.execute(update(table).where(table.c[key_column] == key).values(**row))
-        else:
-            conn.execute(table.insert().values(**row))
+def _ensure_storage_initialized() -> None:
+    if not _STORAGE_INITIALIZED:
+        init_storage()
 
 
 def save_spec(
@@ -142,41 +137,68 @@ def save_spec(
     issue_number: int,
     payload: dict[str, Any],
 ) -> None:
-    init_storage()
-    _upsert(
-        sdd_specs,
-        {
-            "spec_id": spec_id,
-            "thread_id": thread_id,
-            "repo_owner": repo_owner,
-            "repo_name": repo_name,
-            "issue_number": issue_number,
-            "payload": _serialize_payload(payload),
-        },
-        "spec_id",
-    )
+    _ensure_storage_initialized()
+    now = datetime.now(UTC)
+    row = {
+        "spec_id": spec_id,
+        "thread_id": thread_id,
+        "repo_owner": repo_owner,
+        "repo_name": repo_name,
+        "issue_number": issue_number,
+        "payload": _serialize_payload(payload),
+        "updated_at": now,
+    }
+    engine = get_engine()
+    with engine.begin() as conn:
+        existing = conn.execute(
+            select(sdd_specs.c.spec_id).where(sdd_specs.c.spec_id == spec_id)
+        ).first()
+        if existing:
+            conn.execute(update(sdd_specs).where(sdd_specs.c.spec_id == spec_id).values(**row))
+        else:
+            conn.execute(sdd_specs.insert().values(**row, created_at=now))
 
 
 def save_plan(*, plan_id: str, spec_id: str, payload: dict[str, Any]) -> None:
-    init_storage()
-    _upsert(
-        sdd_plans,
-        {"plan_id": plan_id, "spec_id": spec_id, "payload": _serialize_payload(payload)},
-        "plan_id",
-    )
+    _ensure_storage_initialized()
+    now = datetime.now(UTC)
+    row = {
+        "plan_id": plan_id,
+        "spec_id": spec_id,
+        "payload": _serialize_payload(payload),
+        "updated_at": now,
+    }
+    engine = get_engine()
+    with engine.begin() as conn:
+        existing = conn.execute(
+            select(sdd_plans.c.plan_id).where(sdd_plans.c.plan_id == plan_id)
+        ).first()
+        if existing:
+            conn.execute(update(sdd_plans).where(sdd_plans.c.plan_id == plan_id).values(**row))
+        else:
+            conn.execute(sdd_plans.insert().values(**row, created_at=now))
 
 
 def save_subtasks(*, subtasks_id: str, plan_id: str, payload: dict[str, Any]) -> None:
-    init_storage()
-    _upsert(
-        sdd_subtasks,
-        {
-            "subtasks_id": subtasks_id,
-            "plan_id": plan_id,
-            "payload": _serialize_payload(payload),
-        },
-        "subtasks_id",
-    )
+    _ensure_storage_initialized()
+    now = datetime.now(UTC)
+    row = {
+        "subtasks_id": subtasks_id,
+        "plan_id": plan_id,
+        "payload": _serialize_payload(payload),
+        "updated_at": now,
+    }
+    engine = get_engine()
+    with engine.begin() as conn:
+        existing = conn.execute(
+            select(sdd_subtasks.c.subtasks_id).where(sdd_subtasks.c.subtasks_id == subtasks_id)
+        ).first()
+        if existing:
+            conn.execute(
+                update(sdd_subtasks).where(sdd_subtasks.c.subtasks_id == subtasks_id).values(**row)
+            )
+        else:
+            conn.execute(sdd_subtasks.insert().values(**row, created_at=now))
 
 
 def save_run(
@@ -192,27 +214,34 @@ def save_run(
     ci_fix_rounds: int = 0,
     metadata_json: dict[str, Any] | None = None,
 ) -> None:
-    init_storage()
-    _upsert(
-        sdd_runs,
-        {
-            "run_id": run_id,
-            "thread_id": thread_id,
-            "source": source,
-            "status": status,
-            "repo_owner": repo_owner,
-            "repo_name": repo_name,
-            "issue_number": issue_number,
-            "pr_number": pr_number,
-            "ci_fix_rounds": ci_fix_rounds,
-            "metadata_json": _serialize_payload(metadata_json or {}),
-        },
-        "run_id",
-    )
+    _ensure_storage_initialized()
+    now = datetime.now(UTC)
+    row = {
+        "run_id": run_id,
+        "thread_id": thread_id,
+        "source": source,
+        "status": status,
+        "repo_owner": repo_owner,
+        "repo_name": repo_name,
+        "issue_number": issue_number,
+        "pr_number": pr_number,
+        "ci_fix_rounds": ci_fix_rounds,
+        "metadata_json": _serialize_payload(metadata_json or {}),
+        "updated_at": now,
+    }
+    engine = get_engine()
+    with engine.begin() as conn:
+        existing = conn.execute(
+            select(sdd_runs.c.run_id).where(sdd_runs.c.run_id == run_id)
+        ).first()
+        if existing:
+            conn.execute(update(sdd_runs).where(sdd_runs.c.run_id == run_id).values(**row))
+        else:
+            conn.execute(sdd_runs.insert().values(**row, created_at=now))
 
 
 def get_latest_run_for_pr(repo_owner: str, repo_name: str, pr_number: int) -> dict[str, Any] | None:
-    init_storage()
+    _ensure_storage_initialized()
     engine = get_engine()
     stmt = (
         select(sdd_runs)
@@ -234,7 +263,7 @@ def get_latest_run_for_pr(repo_owner: str, repo_name: str, pr_number: int) -> di
 
 
 def increment_ci_fix_rounds(run_id: str) -> int:
-    init_storage()
+    _ensure_storage_initialized()
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(select(sdd_runs).where(sdd_runs.c.run_id == run_id)).mappings().first()

@@ -116,14 +116,14 @@ DATABASE_URL="sqlite:///open_swe.db"
 
 Supported values:
 
-- `docker-container` (default) — requires Docker plus the `open-swe-sandbox:latest` image
-- `k8s-pod` — requires `kubectl` access plus the `open-swe-sandbox:latest` image
+- `docker-container` (default) — requires Docker plus a `SANDBOX_IMAGE`
+- `k8s-pod` — requires `kubectl` access plus a `SANDBOX_IMAGE`
 - `local` — development only; runs directly on the host
 
-To build the default sandbox image locally:
+To build a sandbox image locally:
 
 ```bash
-docker build -t open-swe-sandbox:latest .
+docker build -t my-open-swe-sandbox:latest .
 ```
 
 ## 5. Set up triggers
@@ -286,9 +286,21 @@ DATABASE_URL="postgresql+psycopg://open_swe:open_swe@localhost:5432/open_swe"
 
 # === Sandbox ===
 SANDBOX_TYPE="docker-container"        # docker-container | k8s-pod | local
+SANDBOX_IMAGE="my-open-swe-sandbox:latest"
+SANDBOX_K8S_NAMESPACE="default"        # optional for k8s-pod
 
 # === CI auto-fix ===
 MAX_CI_FIX_ROUNDS="2"
+
+# === Observability (optional) ===
+OTEL_TRACES_ENABLED="true"
+OTEL_SERVICE_NAME="open-swe"
+OTEL_EXPORTER_OTLP_ENDPOINT=""         # e.g. https://collector.example/v1/traces
+OTEL_EXPORTER_OTLP_HEADERS=""          # e.g. "Authorization=Bearer token"
+LANGFUSE_ENABLED="true"
+LANGFUSE_PUBLIC_KEY=""
+LANGFUSE_SECRET_KEY=""
+LANGFUSE_HOST="https://cloud.langfuse.com"
 
 # === Token Encryption ===
 TOKEN_ENCRYPTION_KEY=""                # Generate with: openssl rand -base64 32
@@ -360,7 +372,7 @@ The server runs on `http://localhost:2024` with these endpoints:
 For production, deploy the agent behind your preferred process manager or container platform:
 
 1. Push your code to a GitHub repository
-2. Build and publish the application image plus the `open-swe-sandbox:latest` sandbox image
+2. Build and publish the application image plus your configured `SANDBOX_IMAGE`
 3. Provision PostgreSQL and set all environment variables from step 6
 4. Run `docker compose up -d` (or translate the same services to Kubernetes)
 5. Update your webhook URLs (Slack, GitHub App) to point to your production URL
@@ -396,7 +408,7 @@ The `langgraph.json` at the project root already defines the graph entry point a
 ### Sandbox creation failures
 
 - Verify `SANDBOX_TYPE` is one of `docker-container`, `k8s-pod`, or `local`
-- For `docker-container`, confirm Docker is installed and the `open-swe-sandbox:latest` image exists locally
+- For `docker-container`, confirm Docker is installed and the configured `SANDBOX_IMAGE` exists locally
 - For `k8s-pod`, confirm `kubectl` can create pods in the target cluster/namespace and the sandbox image is pullable there
 - If using PostgreSQL, verify `DATABASE_URL` points at a reachable database
 

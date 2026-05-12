@@ -35,8 +35,8 @@ Set the `SANDBOX_TYPE` environment variable to switch providers. Each provider h
 
 | `SANDBOX_TYPE` | Integration file | Required env vars |
 |---|---|---|
-| `docker-container` (default) | `agent/integrations/docker_container.py` | Docker CLI + `open-swe-sandbox:latest` image |
-| `k8s-pod` | `agent/integrations/k8s_pod.py` | `kubectl` access + `open-swe-sandbox:latest` image |
+| `docker-container` (default) | `agent/integrations/docker_container.py` | Docker CLI + `SANDBOX_IMAGE` |
+| `k8s-pod` | `agent/integrations/k8s_pod.py` | `kubectl` access + `SANDBOX_IMAGE` (optional `SANDBOX_K8S_NAMESPACE`) |
 | `local` | `agent/integrations/local.py` | None (no isolation — development only), `SANDBOX_TYPE="local"` |
 
 > **Warning**: `local` runs commands directly on your host with no sandboxing. Only use for local development with human-in-the-loop enabled.

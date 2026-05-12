@@ -46,73 +46,112 @@ def build_sdd_spec(
     }
 
 
-def build_sdd_plan(*, plan_id: str, spec_id: str) -> dict[str, Any]:
+def build_sdd_plan(*, plan_id: str, spec_id: str, spec_payload: dict[str, Any]) -> dict[str, Any]:
+    requirements = spec_payload.get("Requirements", [])
+    acceptance = spec_payload.get("AcceptanceCriteria", [])
+    generated_tasks: list[dict[str, Any]] = []
+    for index, requirement in enumerate(requirements, start=1):
+        statement = ""
+        if isinstance(requirement, dict):
+            statement = str(requirement.get("statement", "")).strip()
+        elif isinstance(requirement, str):
+            statement = requirement.strip()
+        if not statement:
+            continue
+        generated_tasks.append(
+            {
+                "task_id": f"TASK-{index}",
+                "title": statement,
+                "status": "pending",
+                "exit_criteria": [f"Requirement satisfied: {statement}"],
+            }
+        )
+
+    if not generated_tasks:
+        problem_statement = (
+            str(spec_payload.get("ProblemStatement", "")).strip() or "Complete issue"
+        )
+        generated_tasks = [
+            {
+                "task_id": "TASK-1",
+                "title": problem_statement,
+                "status": "pending",
+                "exit_criteria": [f"Problem statement addressed: {problem_statement}"],
+            }
+        ]
+
+    validation_task_id = f"TASK-{len(generated_tasks) + 1}"
+    generated_tasks.append(
+        {
+            "task_id": validation_task_id,
+            "title": "Validate implementation with repository checks",
+            "status": "pending",
+            "exit_criteria": ["Lint passes", "Tests pass"],
+        }
+    )
+
+    dependencies: list[dict[str, str]] = []
+    for idx in range(1, len(generated_tasks)):
+        dependencies.append(
+            {
+                "from_task_id": f"TASK-{idx}",
+                "to_task_id": f"TASK-{idx + 1}",
+                "type": "blocks",
+            }
+        )
+
+    definition_of_done: list[str] = []
+    for criterion in acceptance:
+        if isinstance(criterion, dict):
+            statement = str(criterion.get("statement", "")).strip()
+            if statement:
+                definition_of_done.append(statement)
+    if not definition_of_done:
+        definition_of_done = [
+            "Implementation merged with passing validation",
+            "Required docs/config updates included",
+        ]
+
     return {
         "PlanId": plan_id,
         "SpecId": spec_id,
         "Version": 1,
         "CreatedAt": _ts(),
-        "Tasks": [
-            {
-                "task_id": "TASK-1",
-                "title": "Analyze issue requirements and impacted modules",
-                "status": "pending",
-                "exit_criteria": ["Impacted modules identified"],
-            },
-            {
-                "task_id": "TASK-2",
-                "title": "Implement focused code changes",
-                "status": "pending",
-                "exit_criteria": ["Code updated in impacted modules"],
-            },
-            {
-                "task_id": "TASK-3",
-                "title": "Validate with lint and tests",
-                "status": "pending",
-                "exit_criteria": ["Lint and tests pass"],
-            },
-        ],
-        "Dependencies": [
-            {"from_task_id": "TASK-1", "to_task_id": "TASK-2", "type": "blocks"},
-            {"from_task_id": "TASK-2", "to_task_id": "TASK-3", "type": "blocks"},
-        ],
-        "DefinitionOfDone": [
-            "Implementation merged with passing validation",
-            "Required docs/config updates included",
-        ],
+        "Tasks": generated_tasks,
+        "Dependencies": dependencies,
+        "DefinitionOfDone": definition_of_done,
     }
 
 
-def build_sdd_subtasks(*, subtasks_id: str, plan_id: str) -> dict[str, Any]:
+def build_sdd_subtasks(
+    *, subtasks_id: str, plan_id: str, plan_payload: dict[str, Any]
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    tasks = plan_payload.get("Tasks", [])
+    for index, task in enumerate(tasks, start=1):
+        if not isinstance(task, dict):
+            continue
+        task_id = str(task.get("task_id", f"TASK-{index}"))
+        title = str(task.get("title", f"Complete {task_id}"))
+        exit_criteria = task.get("exit_criteria", [])
+        validation_steps = [str(step) for step in exit_criteria if str(step).strip()]
+        if not validation_steps:
+            validation_steps = [f"Task complete: {task_id}"]
+        items.append(
+            {
+                "subtask_id": f"SUBTASK-{index}",
+                "task_id": task_id,
+                "title": title,
+                "status": "pending",
+                "validation_steps": validation_steps,
+                "artifacts": [],
+            }
+        )
+
     return {
         "SubtasksId": subtasks_id,
         "PlanId": plan_id,
         "Version": 1,
         "CreatedAt": _ts(),
-        "Items": [
-            {
-                "subtask_id": "SUBTASK-1",
-                "task_id": "TASK-1",
-                "title": "Parse issue and comments",
-                "status": "pending",
-                "validation_steps": ["Issue context parsed"],
-                "artifacts": [],
-            },
-            {
-                "subtask_id": "SUBTASK-2",
-                "task_id": "TASK-2",
-                "title": "Apply implementation changes",
-                "status": "pending",
-                "validation_steps": ["Code diff created"],
-                "artifacts": [],
-            },
-            {
-                "subtask_id": "SUBTASK-3",
-                "task_id": "TASK-3",
-                "title": "Run lint and tests",
-                "status": "pending",
-                "validation_steps": ["Lint pass", "Test pass"],
-                "artifacts": [],
-            },
-        ],
+        "Items": items,
     }
