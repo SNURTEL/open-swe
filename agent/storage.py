@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
@@ -26,6 +27,7 @@ from .config import get_settings
 
 metadata = MetaData()
 _STORAGE_INITIALIZED = False
+_STORAGE_INIT_LOCK = threading.Lock()
 
 sdd_specs = Table(
     "sdd_specs",
@@ -118,9 +120,12 @@ def init_storage() -> None:
     global _STORAGE_INITIALIZED
     if _STORAGE_INITIALIZED:
         return
-    engine = get_engine()
-    metadata.create_all(engine)
-    _STORAGE_INITIALIZED = True
+    with _STORAGE_INIT_LOCK:
+        if _STORAGE_INITIALIZED:
+            return
+        engine = get_engine()
+        metadata.create_all(engine)
+        _STORAGE_INITIALIZED = True
 
 
 def _ensure_storage_initialized() -> None:

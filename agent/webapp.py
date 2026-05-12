@@ -1077,7 +1077,8 @@ async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
     request: Request, background_tasks: BackgroundTasks
 ) -> dict[str, str]:
     """Linear integration is intentionally disabled for SDD runtime."""
-    _ = (request, background_tasks)
+    _ = request
+    _ = background_tasks
     return {"status": "ignored", "reason": "Linear integration is disabled"}
 
 
