@@ -92,12 +92,12 @@ After creating the app:
 
 Open SWE persists SDD artifacts and run metadata in SQL storage selected by `DATABASE_URL`, and runs tasks in self-hosted sandbox backends selected by `SANDBOX_TYPE`.
 
-### 4a. Start PostgreSQL (recommended)
+### 4a. Start PostgreSQL and Langfuse (recommended)
 
 The easiest path is Docker Compose:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres langfuse-web langfuse-worker clickhouse minio redis
 ```
 
 Use this connection string:
@@ -298,14 +298,22 @@ OTEL_SERVICE_NAME="open-swe"
 OTEL_EXPORTER_OTLP_ENDPOINT=""         # e.g. https://collector.example/v1/traces
 OTEL_EXPORTER_OTLP_HEADERS=""          # e.g. "Authorization=Bearer token"
 LANGFUSE_ENABLED="true"
-LANGFUSE_PUBLIC_KEY=""
-LANGFUSE_SECRET_KEY=""
-LANGFUSE_HOST="https://cloud.langfuse.com"
+LANGFUSE_PUBLIC_KEY="pk-lf-local"
+LANGFUSE_SECRET_KEY="sk-lf-local"
+LANGFUSE_HOST="http://localhost:3000"
 
 # === Token Encryption ===
 TOKEN_ENCRYPTION_KEY=""                # Generate with: openssl rand -base64 32
                                        # Supports key rotation: see "Rotating TOKEN_ENCRYPTION_KEY" below
 ```
+
+If you're using the bundled Docker Compose Langfuse stack, the defaults above work out-of-the-box.
+Open `http://localhost:3000` and sign in with:
+
+- Email: `admin@open-swe.local`
+- Password: `open-swe-local-password`
+
+For production, override these defaults and rotate all secrets.
 
 ### Rotating TOKEN_ENCRYPTION_KEY
 

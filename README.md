@@ -136,6 +136,7 @@ This is an area where you can extend Open SWE for your org: add deterministic CI
 - **Subagent support** — the agent can spawn child agents for parallel subtasks
 - **SQL-backed SDD runtime** — persists Spec/Plan/Subtasks and run state with `DATABASE_URL`
 - **Prometheus metrics** — exposes `/metrics` for run lifecycle and CI autofix observability
+- **Langfuse tracing support** — optional Langfuse event traces via `LANGFUSE_*` settings (cloud or local Docker Compose)
 
 ---
 
