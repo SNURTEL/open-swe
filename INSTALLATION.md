@@ -313,7 +313,7 @@ Open `http://localhost:3000` and sign in with:
 - Email: `admin@open-swe.local`
 - Password: `open-swe-local-password`
 
-For production, override these defaults and rotate all secrets.
+⚠️ These defaults are for local development only. For production, override these values and rotate all secrets before exposing the stack.
 
 ### Rotating TOKEN_ENCRYPTION_KEY
 
