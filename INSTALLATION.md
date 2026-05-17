@@ -301,6 +301,7 @@ LANGFUSE_ENABLED="true"
 LANGFUSE_PUBLIC_KEY="pk-lf-local"
 LANGFUSE_SECRET_KEY="sk-lf-local"
 LANGFUSE_HOST="http://localhost:3000"
+CLICKHOUSE_CLUSTER_ENABLED="false"      # required for local single-node ClickHouse
 
 # === Token Encryption ===
 TOKEN_ENCRYPTION_KEY=""                # Generate with: openssl rand -base64 32
