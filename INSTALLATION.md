@@ -54,6 +54,7 @@ Open SWE authenticates as a [GitHub App](https://docs.github.com/en/apps/creatin
 3. Set permissions:
    - **Repository permissions**:
      - Contents: Read & write
+     - Checks: Read & write
      - Pull requests: Read & write
      - Issues: Read & write
      - Metadata: Read-only
