@@ -1,5 +1,6 @@
 """Custom FastAPI routes for LangGraph server."""
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -1398,7 +1399,8 @@ async def _trigger_or_queue_run(
         if thread_active:
             logger.info("Thread %s is busy, queuing GitHub PR comment message", thread_id)
             await queue_message_for_thread(thread_id, prompt)
-            persist_run_state(
+            await asyncio.to_thread(
+                persist_run_state,
                 run_id=run_id,
                 thread_id=thread_id,
                 source="github",
@@ -1412,7 +1414,8 @@ async def _trigger_or_queue_run(
 
         logger.info("Creating LangGraph run for thread %s from GitHub PR comment", thread_id)
         langgraph_client = get_client(url=LANGGRAPH_URL)
-        persist_run_state(
+        await asyncio.to_thread(
+            persist_run_state,
             run_id=run_id,
             thread_id=thread_id,
             source="github",
@@ -2014,7 +2017,7 @@ async def process_github_check_suite(payload: dict[str, Any]) -> None:
         if not repo_owner or not repo_name:
             return
 
-        latest = get_latest_run_for_pr(repo_owner, repo_name, pr_number)
+        latest = await asyncio.to_thread(get_latest_run_for_pr, repo_owner, repo_name, pr_number)
         if not latest:
             logger.info(
                 "Skipping CI auto-fix for %s/%s#%s: no tracked run",
@@ -2046,9 +2049,10 @@ async def process_github_check_suite(payload: dict[str, Any]) -> None:
             f"CI failed for PR #{pr_number}. Analyze failure details and apply a fix. "
             f"Run lint/tests relevant to the failure and update the PR. CI URL: {ci_url}"
         )
-        rounds = increment_ci_fix_rounds(run_id)
+        rounds = await asyncio.to_thread(increment_ci_fix_rounds, run_id)
         observe_ci_fix_round(repo_owner, repo_name)
-        persist_run_state(
+        await asyncio.to_thread(
+            persist_run_state,
             run_id=run_id,
             thread_id=thread_id,
             source="github",
@@ -2350,7 +2354,8 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
             plan_id=plan_id,
             plan_payload=plan_payload,
         )
-        save_spec(
+        await asyncio.to_thread(
+            save_spec,
             spec_id=spec_id,
             thread_id=thread_id,
             repo_owner=repo_config["owner"],
@@ -2358,8 +2363,10 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
             issue_number=issue_number,
             payload=spec_payload,
         )
-        save_plan(plan_id=plan_id, spec_id=spec_id, payload=plan_payload)
-        save_subtasks(subtasks_id=subtasks_id, plan_id=plan_id, payload=subtasks_payload)
+        await asyncio.to_thread(save_plan, plan_id=plan_id, spec_id=spec_id, payload=plan_payload)
+        await asyncio.to_thread(
+            save_subtasks, subtasks_id=subtasks_id, plan_id=plan_id, payload=subtasks_payload
+        )
 
         prompt = build_github_issue_prompt(
             repo_config,
@@ -2399,7 +2406,8 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
 
     logger.info("Creating LangGraph run for thread %s from GitHub issue", thread_id)
     run_id = generate_thread_scoped_run_id(thread_id)
-    persist_run_state(
+    await asyncio.to_thread(
+        persist_run_state,
         run_id=run_id,
         thread_id=thread_id,
         source="github",
@@ -2417,7 +2425,8 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         config={"configurable": configurable, "metadata": _AGENT_VERSION_METADATA},
         if_not_exists="create",
     )
-    persist_run_state(
+    await asyncio.to_thread(
+        persist_run_state,
         run_id=run_id,
         thread_id=thread_id,
         source="github",
