@@ -2069,17 +2069,17 @@ async def process_github_check_suite(payload: dict[str, Any]) -> None:
         )
 
 
-async def _refresh_thread_github_token_after_401(thread_id: str, email: str) -> str | None:
+async def _refresh_thread_github_token_after_401(thread_id: str) -> str | None:
     """Invalidate the cached token after a 401 and try to resolve a fresh one."""
     logger.warning(
         "GitHub returned 401 for thread %s; invalidating cached token and re-resolving",
         thread_id,
     )
     await invalidate_cached_github_token(thread_id)
-    return await _get_or_resolve_thread_github_token(thread_id, email)
+    return await _get_or_resolve_thread_github_token(thread_id)
 
 
-async def _get_or_resolve_thread_github_token(thread_id: str, _email: str) -> str | None:
+async def _get_or_resolve_thread_github_token(thread_id: str) -> str | None:
     """Resolve and persist a GitHub token for a thread when available.
 
     Skips the cached ciphertext when its ``github_token_expires_at`` is past.
@@ -2162,7 +2162,7 @@ async def process_github_pr_comment(payload: dict[str, Any], event_type: str) ->
         logger.warning("No email mapping for GitHub user '%s', skipping", github_login)
         return
 
-    github_token = await _get_or_resolve_thread_github_token(thread_id, email)
+    github_token = await _get_or_resolve_thread_github_token(thread_id)
     if not github_token:
         logger.warning("No GitHub token for thread %s, skipping", thread_id)
         return
@@ -2178,7 +2178,7 @@ async def process_github_pr_comment(payload: dict[str, Any], event_type: str) ->
                 node_id=node_id,
             )
         except GitHubAuthError:
-            github_token = await _refresh_thread_github_token_after_401(thread_id, email)
+            github_token = await _refresh_thread_github_token_after_401(thread_id)
             if not github_token:
                 logger.warning("Re-auth failed for thread %s after 401; skipping", thread_id)
                 return
@@ -2200,7 +2200,7 @@ async def process_github_pr_comment(payload: dict[str, Any], event_type: str) ->
             repo_config, pr_number, token=github_token
         )
     except GitHubAuthError:
-        github_token = await _refresh_thread_github_token_after_401(thread_id, email)
+        github_token = await _refresh_thread_github_token_after_401(thread_id)
         if not github_token:
             logger.warning("Re-auth failed for thread %s after 401; skipping", thread_id)
             return
@@ -2259,7 +2259,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
 
     thread_id = generate_thread_id_from_github_issue(issue_id)
     existing_thread = await _thread_exists(thread_id)
-    github_token = await _get_or_resolve_thread_github_token(thread_id, email)
+    github_token = await _get_or_resolve_thread_github_token(thread_id)
     app_token = await get_github_app_installation_token()
     reaction_token = github_token or app_token
     comment = payload.get("comment", {})
@@ -2276,7 +2276,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
                     token=reaction_token,
                 )
             except GitHubAuthError:
-                github_token = await _refresh_thread_github_token_after_401(thread_id, email)
+                github_token = await _refresh_thread_github_token_after_401(thread_id)
                 reaction_token = github_token or app_token
                 reacted = False
                 if reaction_token:
@@ -2310,7 +2310,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
                 repo_config, issue_number, token=github_token or app_token
             )
         except GitHubAuthError:
-            github_token = await _refresh_thread_github_token_after_401(thread_id, email)
+            github_token = await _refresh_thread_github_token_after_401(thread_id)
             comments = await fetch_issue_comments(
                 repo_config, issue_number, token=github_token or app_token
             )

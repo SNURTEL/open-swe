@@ -227,7 +227,7 @@ def test_process_github_pr_comment_invalidates_and_reauths_on_401(
 
     tokens = iter(["stale-token", "fresh-token"])
 
-    async def fake_get_or_resolve(thread_id: str, email: str) -> str | None:
+    async def fake_get_or_resolve(thread_id: str) -> str | None:
         token = next(tokens)
         resolves.append(token)
         return token
@@ -353,7 +353,7 @@ def test_get_or_resolve_thread_github_token_uses_cached_token(
         fake_get_github_app_installation_token_with_expiry,
     )
 
-    token = asyncio.run(webapp._get_or_resolve_thread_github_token("thread-1", "user@example.com"))
+    token = asyncio.run(webapp._get_or_resolve_thread_github_token("thread-1"))
     assert token == "cached-token"
     assert called["app_token"] is False
 
@@ -391,7 +391,7 @@ def test_get_or_resolve_thread_github_token_falls_back_to_app_token(
         webapp, "persist_encrypted_github_token", fake_persist_encrypted_github_token
     )
 
-    token = asyncio.run(webapp._get_or_resolve_thread_github_token("thread-2", "user@example.com"))
+    token = asyncio.run(webapp._get_or_resolve_thread_github_token("thread-2"))
     assert token == "app-token"
     assert persisted == {
         "thread_id": "thread-2",
@@ -420,5 +420,5 @@ def test_get_or_resolve_thread_github_token_returns_none_when_app_token_missing(
         fake_get_github_app_installation_token_with_expiry,
     )
 
-    token = asyncio.run(webapp._get_or_resolve_thread_github_token("thread-3", "user@example.com"))
+    token = asyncio.run(webapp._get_or_resolve_thread_github_token("thread-3"))
     assert token is None
