@@ -35,11 +35,7 @@ from .storage import (
     save_spec,
     save_subtasks,
 )
-from .utils.auth import (
-    is_bot_token_only_mode,
-    persist_encrypted_github_token,
-    resolve_github_token_from_email,
-)
+from .utils.auth import persist_encrypted_github_token
 from .utils.authorship import OPEN_SWE_BOT_NAME
 from .utils.comments import get_recent_comments
 from .utils.github_app import (
@@ -2083,40 +2079,27 @@ async def _refresh_thread_github_token_after_401(thread_id: str, email: str) -> 
     return await _get_or_resolve_thread_github_token(thread_id, email)
 
 
-async def _get_or_resolve_thread_github_token(thread_id: str, email: str) -> str | None:
+async def _get_or_resolve_thread_github_token(thread_id: str, _email: str) -> str | None:
     """Resolve and persist a GitHub token for a thread when available.
 
     Skips the cached ciphertext when its ``github_token_expires_at`` is past.
-    In bot-token-only mode, returns a fresh GitHub App installation token
-    instead of resolving per-user OAuth tokens.
+    Falls back to a fresh GitHub App installation token when no cached token
+    is available.
     """
-    if is_bot_token_only_mode():
-        bot_token, expires_at = await get_github_app_installation_token_with_expiry()
-        if bot_token:
-            try:
-                await persist_encrypted_github_token(thread_id, bot_token, expires_at=expires_at)
-            except Exception:
-                logger.warning("Could not persist bot token for thread %s", thread_id)
-            return bot_token
-        logger.warning("Bot-token-only mode but GitHub App token unavailable")
-        return None
-
     github_token, _encrypted_token, _expires_at = await get_github_token_from_thread(thread_id)
     if github_token:
         return github_token
 
-    auth_result = await resolve_github_token_from_email(email)
-    github_token = auth_result.get("token")
-    if not github_token:
+    installation_token, expires_at = await get_github_app_installation_token_with_expiry()
+    if not installation_token:
+        logger.warning("GitHub App installation token unavailable for thread %s", thread_id)
         return None
 
     try:
-        await persist_encrypted_github_token(
-            thread_id, github_token, expires_at=auth_result.get("expires_at")
-        )
+        await persist_encrypted_github_token(thread_id, installation_token, expires_at=expires_at)
     except Exception:
-        logger.warning("Could not persist GitHub token for thread %s", thread_id)
-    return github_token
+        logger.warning("Could not persist GitHub App token for thread %s", thread_id)
+    return installation_token
 
 
 async def process_github_pr_comment(payload: dict[str, Any], event_type: str) -> None:
