@@ -24,7 +24,7 @@
 
 Elite engineering orgs like Stripe, Ramp, and Coinbase are building their own internal coding agents — Slackbots, CLIs, and web apps that meet engineers where they already work. These agents are connected to internal systems with the right context, permissioning, and safety boundaries to operate with minimal human oversight.
 
-Open SWE is the open-source version of this pattern. Built on [LangGraph](https://langchain-ai.github.io/langgraph/) and [Deep Agents](https://github.com/langchain-ai/deepagents), it gives you the same architecture those companies built internally: cloud sandboxes, Slack and Linear invocation, subagent orchestration, and automatic PR creation — ready to customize for your own codebase and workflows.
+Open SWE is the open-source version of this pattern. Built on [LangGraph](https://langchain-ai.github.io/langgraph/) and [Deep Agents](https://github.com/langchain-ai/deepagents), it gives you the same architecture those companies built internally: isolated sandboxes, Slack and GitHub invocation, subagent orchestration, SQL-backed run state, and automatic PR creation — ready to customize for your own codebase and workflows.
 
 > [!NOTE]
 > 💬 Read the **announcement blog post [here](https://blog.langchain.com/open-swe-an-open-source-framework-for-internal-coding-agents/)**
@@ -43,7 +43,7 @@ Rather than forking an existing agent or building from scratch, Open SWE **compo
 create_deep_agent(
     model="openai:gpt-5.5",
     system_prompt=construct_system_prompt(...),
-    tools=[http_request, fetch_url, linear_comment, slack_thread_reply],
+    tools=[http_request, fetch_url, slack_thread_reply],
     backend=sandbox_backend,
     middleware=[ToolErrorMiddleware(), check_message_queue_before_model, ...],
 )
@@ -51,9 +51,9 @@ create_deep_agent(
 
 ### 2. Sandbox — Isolated Cloud Environments
 
-Every task runs in its own **isolated cloud sandbox** — a remote Linux environment with full shell access. The repo is cloned in, the agent gets full permissions, and the blast radius of any mistake is fully contained. No production access, no confirmation prompts.
+Every task runs in its own **isolated sandbox** — a remote Linux environment with full shell access. The repo is cloned in, the agent gets full permissions, and the blast radius of any mistake is fully contained. No production access, no confirmation prompts.
 
-Open SWE supports multiple sandbox providers out of the box — [Modal](https://modal.com/), [Daytona](https://www.daytona.io/), [Runloop](https://www.runloop.ai/), and [LangSmith](https://smith.langchain.com/) — and you can plug in your own. See the [Customization Guide](CUSTOMIZATION.md#1-sandbox) for details.
+Open SWE currently supports self-hosted sandbox backends out of the box: `docker-container`, `k8s-pod`, and `local`. See the [Customization Guide](CUSTOMIZATION.md#1-sandbox) for details.
 
 This follows the principle all three companies converge on: **isolate first, then give full permissions inside the boundary.**
 
@@ -70,17 +70,16 @@ Stripe's key insight: *tool curation matters more than tool quantity.* Open SWE 
 | `execute` | Shell commands in the sandbox |
 | `fetch_url` | Fetch web pages as markdown |
 | `http_request` | API calls (GET, POST, etc.) |
-| `linear_comment` | Post updates to Linear tickets |
 | `slack_thread_reply` | Reply in Slack threads |
 
-GitHub operations are performed with `GH_TOKEN=dummy gh` inside the sandbox, backed by the LangSmith proxy. Plus the built-in Deep Agents tools: `read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep`, `write_todos`, and `task` (subagent spawning).
+GitHub operations are performed with `gh` inside the sandbox using the runtime GitHub auth flow. Plus the built-in Deep Agents tools: `read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep`, `write_todos`, and `task` (subagent spawning).
 
 ### 4. Context Engineering — AGENTS.md + Source Context
 
 Open SWE gathers context from two sources:
 
 - **`AGENTS.md`** — If the repo contains an `AGENTS.md` file at the root, it's read from the sandbox and injected into the system prompt. This is your repo-level equivalent of Stripe's rule files: encoding conventions, testing requirements, and architectural decisions that every agent run should follow.
-- **Source context** — The full Linear issue (title, description, comments) or Slack thread history is assembled and passed to the agent, so it starts with rich context rather than discovering everything through tool calls.
+- **Source context** — GitHub issue context and Slack thread history are assembled and passed to the agent, so it starts with rich context rather than discovering everything through tool calls.
 
 ### 5. Orchestration — Subagents + Middleware
 
@@ -90,23 +89,24 @@ Open SWE's orchestration has two layers:
 
 **Middleware:** Deterministic middleware hooks run around the agent loop:
 
-- **`check_message_queue_before_model`** — Injects follow-up messages (Linear comments or Slack messages that arrive mid-run) before the next model call. You can message the agent while it's working and it'll pick up your input at its next step.
+- **`check_message_queue_before_model`** — Injects follow-up messages (for example Slack messages that arrive mid-run) before the next model call. You can message the agent while it's working and it'll pick up your input at its next step.
 - **`notify_step_limit_reached`** — After-agent hook that posts a Slack reply when the agent hits the model-call limit, so users get a clear signal instead of silence.
 - **`ToolErrorMiddleware`** — Catches and handles tool errors gracefully.
+- **SDD persistence + metrics** — GitHub issue-triggered runs persist Spec/Plan/Subtasks artifacts plus run metadata to SQL storage and expose Prometheus metrics at `/metrics`.
 
-### 6. Invocation — Slack, Linear, and GitHub
+### 6. Invocation — Slack and GitHub
 
 All three companies in the article converge on **Slack as the primary invocation surface**. Open SWE does the same:
 
 - **Slack** — Mention the bot in any thread. Supports `repo:owner/name` syntax to specify which repo to work on. The agent replies in-thread with status updates and PR links.
-- **Linear** — Comment `@openswe` on any issue. The agent reads the full issue context, reacts with 👀 to acknowledge, and posts results back as comments.
-- **GitHub** — Tag `@openswe` in PR comments on agent-created PRs to have it address review feedback and push fixes to the same branch.
+- **GitHub issues** — Tag `@openswe` on an issue or issue comment to create/update a task. Issue-triggered runs persist SDD artifacts to SQL storage before execution.
+- **GitHub PRs / CI** — Tag `@openswe` in PR comments on agent-created PRs to have it address review feedback and push fixes to the same branch. Failed `check_suite` events can trigger bounded CI autofix retries for tracked agent PRs.
 
 Each invocation creates a deterministic thread ID, so follow-up messages on the same issue or thread route to the same running agent.
 
 ### 7. Validation — Prompt-Driven
 
-The agent is instructed to run linters, formatters, and tests before committing, and is responsible end-to-end for committing, pushing, opening/updating the draft PR, and replying in the source channel.
+The agent is instructed to run linters, formatters, and tests before committing, and is responsible end-to-end for committing, pushing, opening/updating the draft PR, and replying in the source channel. The runtime also records run state in SQL storage and emits Prometheus metrics for observability.
 This is an area where you can extend Open SWE for your org: add deterministic CI checks, visual verification, or review gates as additional middleware. See the [Customization Guide](CUSTOMIZATION.md#6-middleware) for how.
 
 ---
@@ -116,30 +116,33 @@ This is an area where you can extend Open SWE for your org: add deterministic CI
 | Decision | Open SWE | Stripe (Minions) | Ramp (Inspect) | Coinbase (Cloudbot) |
 |---|---|---|---|---|
 | **Harness** | Composed (Deep Agents/LangGraph) | Forked (Goose) | Composed (OpenCode) | Built from scratch |
-| **Sandbox** | Pluggable (Modal, Daytona, Runloop, etc.) | AWS EC2 devboxes (pre-warmed) | Modal containers (pre-warmed) | In-house |
+| **Sandbox** | Pluggable (`docker-container`, `k8s-pod`, `local`) | AWS EC2 devboxes (pre-warmed) | Modal containers (pre-warmed) | In-house |
 | **Tools** | ~15, curated | ~500, curated per-agent | OpenCode SDK + extensions | MCPs + custom Skills |
-| **Context** | AGENTS.md + issue/thread | Rule files + pre-hydration | OpenCode built-in | Linear-first + MCPs |
+| **Context** | AGENTS.md + issue/thread + SQL-backed SDD artifacts | Rule files + pre-hydration | OpenCode built-in | Linear-first + MCPs |
 | **Orchestration** | Subagents + middleware | Blueprints (deterministic + agentic) | Sessions + child sessions | Three modes |
-| **Invocation** | Slack, Linear, GitHub | Slack + embedded buttons | Slack + web + Chrome extension | Slack-native |
+| **Invocation** | Slack, GitHub | Slack + embedded buttons | Slack + web + Chrome extension | Slack-native |
 | **Validation** | Prompt-driven | 3-layer (local + CI + 1 retry) | Visual DOM verification | Agent councils + auto-merge |
 
 ---
 
 ## Features
 
-- **Trigger from Linear, Slack, or GitHub** — mention `@openswe` in a comment to kick off a task
+- **Trigger from Slack or GitHub** — mention `@openswe` in a comment to kick off a task
 - **Instant acknowledgement** — reacts with 👀 the moment it picks up your message
 - **Message it while it's running** — send follow-up messages mid-task and it'll pick them up before its next step
-- **Run multiple tasks in parallel** — each task runs in its own isolated cloud sandbox
+- **Run multiple tasks in parallel** — each task runs in its own isolated sandbox
 - **GitHub OAuth built-in** — authenticates with your GitHub account automatically
 - **Opens PRs automatically** — commits changes and opens a draft PR when done, linked back to your ticket
 - **Subagent support** — the agent can spawn child agents for parallel subtasks
+- **SQL-backed SDD runtime** — persists Spec/Plan/Subtasks and run state with `DATABASE_URL`
+- **Prometheus metrics** — exposes `/metrics` for run lifecycle and CI autofix observability
+- **Langfuse tracing support** — optional Langfuse event traces via `LANGFUSE_*` settings (cloud or local Docker Compose)
 
 ---
 
 ## Getting Started
 
-- **[Installation Guide](INSTALLATION.md)** — GitHub App creation, LangSmith, Linear/Slack/GitHub triggers, and production deployment
+- **[Installation Guide](INSTALLATION.md)** — GitHub App creation, PostgreSQL/Docker Compose, Slack/GitHub triggers, and deployment
 - **[Customization Guide](CUSTOMIZATION.md)** — swap the sandbox, model, tools, triggers, system prompt, and middleware for your org
 
 ## License

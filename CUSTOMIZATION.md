@@ -12,7 +12,7 @@ if model_id == DEFAULT_LLM_MODEL_ID:
 return create_deep_agent(
     model=make_model(model_id, **model_kwargs),
     system_prompt=construct_system_prompt(...),
-    tools=[http_request, fetch_url, linear_comment, slack_thread_reply],
+    tools=[http_request, fetch_url, slack_thread_reply],
     backend=sandbox_backend,
     middleware=[
         ToolErrorMiddleware(),
@@ -27,40 +27,16 @@ return create_deep_agent(
 
 ## 1. Sandbox
 
-By default, Open SWE runs each task in a [LangSmith cloud sandbox](https://docs.smith.langchain.com/) — an isolated Linux environment where the agent clones the repo and executes commands. Sandbox creation and connection is handled in `agent/integrations/langsmith.py`.
+By default, Open SWE runs each task in a self-hosted sandbox backend selected by `SANDBOX_TYPE`. The default is `docker-container`; `k8s-pod` and `local` are also supported.
 
-### Using a custom sandbox snapshot
-
-Build a snapshot in LangSmith (UI or `SandboxClient.create_snapshot`) from your Docker image and point Open SWE at its UUID:
-
-```bash
-DEFAULT_SANDBOX_SNAPSHOT_ID="<snapshot-uuid>"                      # Required
-DEFAULT_SANDBOX_SNAPSHOT_FS_CAPACITY_BYTES="34359738368"           # Optional, default 32 GiB
-DEFAULT_SANDBOX_VCPUS="4"                                          # Optional, default 4
-DEFAULT_SANDBOX_MEM_BYTES="16106127360"                            # Optional, default 15 GiB
-DEFAULT_SANDBOX_IDLE_TTL_SECONDS="600"                             # Optional, default 600 (10 min); 0 disables
-DEFAULT_SANDBOX_DELETE_AFTER_STOP_SECONDS="86400"                  # Optional, default 86400 (24 h); 0 disables
-```
-
-This is useful for pre-installing languages, frameworks, or internal tools that your repos depend on — reducing setup time per agent run. The default snapshot includes the GitHub CLI; agents invoke it as `GH_TOKEN=dummy gh <command>` and rely on the LangSmith proxy for the real credentials.
-
-For LangSmith sandboxes, Open SWE configures two GitHub proxy rules whenever a sandbox is created or reattached to a run:
-
-- `github.com` / `*.github.com` receive Basic auth for git-over-HTTPS operations.
-- `api.github.com` receives Bearer auth for `gh` and REST API operations.
-
-The proxy token is minted at runtime from the GitHub App installation credentials. Do not store GitHub access tokens as deployment environment variables.
-
-### Using a different sandbox provider
+### Using the built-in providers
 
 Set the `SANDBOX_TYPE` environment variable to switch providers. Each provider has a corresponding integration file in `agent/integrations/` and a factory function registered in `agent/utils/sandbox.py`:
 
 | `SANDBOX_TYPE` | Integration file | Required env vars |
 |---|---|---|
-| `langsmith` (default) | `agent/integrations/langsmith.py` | `LANGSMITH_API_KEY_PROD`, `SANDBOX_TYPE="langsmith"` |
-| `daytona` | `agent/integrations/daytona.py` | `DAYTONA_API_KEY`, `SANDBOX_TYPE="daytona"`, optional `DAYTONA_SANDBOX_SNAPSHOT` |
-| `runloop` | `agent/integrations/runloop.py` | `RUNLOOP_API_KEY`, `SANDBOX_TYPE="runloop"` |
-| `modal` | `agent/integrations/modal.py` | Modal credentials, `SANDBOX_TYPE="modal"` |
+| `docker-container` (default) | `agent/integrations/docker_container.py` | Docker CLI + `SANDBOX_IMAGE` |
+| `k8s-pod` | `agent/integrations/k8s_pod.py` | `kubectl` access + `SANDBOX_IMAGE` (optional `SANDBOX_K8S_NAMESPACE`) |
 | `local` | `agent/integrations/local.py` | None (no isolation — development only), `SANDBOX_TYPE="local"` |
 
 > **Warning**: `local` runs commands directly on your host with no sandboxing. Only use for local development with human-in-the-loop enabled.
@@ -127,50 +103,31 @@ class MySandbox(BaseSandbox):
         )
 ```
 
-See `deepagents.backends.LangSmithSandbox` and `agent/integrations/langsmith.py` for a full reference implementation.
+See `deepagents.backends.sandbox.BaseSandbox` plus the built-in `docker_container` / `k8s_pod` integrations for reference implementations.
 
 ---
 
 ## 2. Model
 
-The model is configured in the `get_agent()` function in `agent/server.py`. By default it uses `openai:gpt-5.5` with medium reasoning effort, but you can override the model with the `LLM_MODEL_ID` environment variable:
+The model is configured in the `get_agent()` function in `agent/server.py`. The runtime is OpenAI-only: `LLM_MODEL_ID` must use the `openai:<model>` format.
 
 ```bash
-# Set the model via environment variable (uses provider:model format)
-LLM_MODEL_ID="anthropic:claude-sonnet-4-6"
+# Set the model via environment variable
+LLM_MODEL_ID="openai:gpt-5.5"
 ```
 
 If `LLM_MODEL_ID` is not set, the default model (`openai:gpt-5.5`) is used.
 
 `max_tokens` is a maximum completion/output token budget, not the model's total context window. For OpenAI reasoning models, this budget can include both internal reasoning tokens and final response tokens.
 
-### Switching models
-
-Use the `provider:model` format:
+### Switching OpenAI models
 
 ```python
-# Anthropic
-model=make_model("anthropic:claude-sonnet-4-6", temperature=0, max_tokens=16_000)
-
 # OpenAI (uses Responses API by default)
 model=make_model("openai:gpt-5.5", max_tokens=128_000, reasoning={"effort": "medium"})
-
-# Google
-model=make_model("google_genai:gemini-2.5-pro", temperature=0, max_tokens=16_000)
 ```
 
-The `make_model()` helper in `agent/utils/model.py` wraps `langchain.chat_models.init_chat_model`. For OpenAI models, it automatically enables the Responses API. For full control, pass a pre-configured model instance directly:
-
-```python
-from langchain_anthropic import ChatAnthropic
-
-model = ChatAnthropic(model_name="claude-sonnet-4-6", temperature=0, max_tokens=16_000)
-
-return create_deep_agent(
-    model=model,
-    ...
-)
-```
+The `make_model()` helper in `agent/utils/model.py` wraps `langchain.chat_models.init_chat_model` and automatically enables the OpenAI Responses API.
 
 ### Using different models per context
 
@@ -182,9 +139,9 @@ async def get_agent(config: RunnableConfig) -> Pregel:
     
     if source == "slack":
         # Faster model for Slack Q&A
-        model = make_model("anthropic:claude-sonnet-4-6", temperature=0, max_tokens=16_000)
+        model = make_model("openai:gpt-5.5-mini", temperature=0, max_tokens=16_000)
     else:
-        # Full model for code changes from Linear
+        # Full model for code changes from GitHub
         model = make_model("openai:gpt-5.5", max_tokens=128_000, reasoning={"effort": "medium"})
     
     return create_deep_agent(model=model, ...)
@@ -200,7 +157,6 @@ Open SWE ships with a small set of custom tools on top of the built-in Deep Agen
 |---|---|---|
 | `fetch_url` | `agent/tools/fetch_url.py` | Fetch web pages as markdown |
 | `http_request` | `agent/tools/http_request.py` | HTTP API calls |
-| `linear_comment` | `agent/tools/linear_comment.py` | Post comments on Linear tickets |
 | `slack_thread_reply` | `agent/tools/slack_thread_reply.py` | Reply in Slack threads |
 
 ### Adding a tool
@@ -231,14 +187,14 @@ def datadog_search(query: str, time_range: str = "1h") -> dict[str, Any]:
 Then register it in `agent/server.py`:
 
 ```python
-from .tools import fetch_url, http_request, linear_comment, slack_thread_reply
+from .tools import fetch_url, http_request, slack_thread_reply
 from .tools.datadog_search import datadog_search
 
 return create_deep_agent(
     ...
     tools=[
         http_request, fetch_url,
-        linear_comment, slack_thread_reply,
+        slack_thread_reply,
         datadog_search,  # new tool
     ],
     ...
@@ -249,7 +205,7 @@ The agent will automatically see the tool's name, docstring, and parameter types
 
 ### Removing tools
 
-If you only use Linear (not Slack), remove `slack_thread_reply` from the tools list and vice versa. If you don't need web fetching, remove `fetch_url`.
+If you don't use Slack, remove `slack_thread_reply` from the tools list. If you don't need web fetching, remove `fetch_url`.
 
 ### Conditional tools
 
@@ -259,12 +215,10 @@ You can vary the toolset based on the trigger source:
 base_tools = [http_request, fetch_url]
 source = config["configurable"].get("source")
 
-if source == "linear":
-    tools = [*base_tools, linear_comment]
-elif source == "slack":
+if source == "slack":
     tools = [*base_tools, slack_thread_reply]
 else:
-    tools = [*base_tools, linear_comment, slack_thread_reply]
+    tools = [*base_tools]
 
 return create_deep_agent(tools=tools, ...)
 ```
@@ -273,20 +227,19 @@ return create_deep_agent(tools=tools, ...)
 
 ## 4. Triggers
 
-Open SWE supports three invocation surfaces: Linear, Slack, and GitHub. Each is implemented as a webhook endpoint in `agent/webapp.py`. You can add, remove, or modify triggers independently.
+Open SWE supports Slack and GitHub as active invocation surfaces. Each is implemented as a webhook endpoint in `agent/webapp.py`. The Linear endpoint remains present only to return a disabled response.
 
 ### Removing a trigger
 
-If you don't use Linear, simply don't configure the Linear webhook and remove the env vars. Same for Slack. The webhook endpoints still exist but won't receive events.
+If you don't use Slack, simply don't configure the Slack webhook and remove the env vars.
 
 To fully remove a trigger's code, delete the corresponding endpoint from `agent/webapp.py`:
 
-- **Linear**: `linear_webhook()` and `process_linear_issue()`
 - **Slack**: `slack_webhook()` and `process_slack_mention()`
 
 ### Default repository
 
-Set the default GitHub org and repo used across all triggers (Slack, Linear, GitHub) when no repo is specified:
+Set the default GitHub org and repo used across active triggers (Slack and GitHub) when no repo is specified:
 
 ```bash
 DEFAULT_REPO_OWNER="my-org"      # Default GitHub org (used everywhere)
@@ -295,35 +248,16 @@ DEFAULT_REPO_NAME="my-repo"      # Default GitHub repo (used everywhere)
 
 These are used as the fallback when:
 - A Slack message doesn't specify a repo (and no thread metadata exists)
-- A Linear issue's team/project isn't in the `LINEAR_TEAM_TO_REPO` mapping
 - A user writes `repo:name` without an org prefix — the org defaults to `DEFAULT_REPO_OWNER`
 
 ### Repository extraction from messages
 
-Both Slack and Linear support specifying a target repo directly in the message or comment text. The shared utility `extract_repo_from_text()` in `agent/utils/repo.py` handles parsing these formats:
+Slack and GitHub prompts support specifying a target repo directly in the message or comment text. The shared utility `extract_repo_from_text()` in `agent/utils/repo.py` handles parsing these formats:
 
 - `repo:owner/name` — explicit org and repo
 - `repo owner/name` — space syntax (same result)
 - `repo:name` — repo name only; the org defaults to `DEFAULT_REPO_OWNER`
 - `https://github.com/owner/name` — GitHub URL
-
-### Customizing Linear routing
-
-The `LINEAR_TEAM_TO_REPO` dict in `agent/utils/linear_team_repo_map.py` maps Linear teams and projects to GitHub repos:
-
-```python
-LINEAR_TEAM_TO_REPO = {
-    "Engineering": {
-        "projects": {
-            "backend": {"owner": "my-org", "name": "backend"},
-            "frontend": {"owner": "my-org", "name": "frontend"},
-        },
-        "default": {"owner": "my-org", "name": "monorepo"},
-    },
-}
-```
-
-Users can also override the team/project mapping on a per-comment basis by including `repo:owner/name` in their `@openswe` comment. This takes priority over the mapping — the mapping is used as a fallback when no repo is specified in the comment. If the team/project isn't found in the mapping either, `DEFAULT_REPO_OWNER`/`DEFAULT_REPO_NAME` is used.
 
 ### Customizing Slack routing
 

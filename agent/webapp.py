@@ -1,5 +1,6 @@
 """Custom FastAPI routes for LangGraph server."""
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -11,22 +12,31 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from langchain_core.messages.content import create_text_block
 from langgraph_sdk import get_client
 from langgraph_sdk.client import LangGraphClient
 
+from .config import get_settings
+from .metrics import metrics_response, observe_ci_fix_round, observe_sdd_run_transition
+from .observability import init_observability, record_langfuse_event, start_trace_span
 from .reviewer_findings import (
     REVIEWER_THREAD_KIND,
     ReviewerPRMeta,
     ReviewerSlackThread,
     set_reviewer_thread_metadata,
 )
-from .utils.auth import (
-    is_bot_token_only_mode,
-    persist_encrypted_github_token,
-    resolve_github_token_from_email,
+from .sdd_formats import build_sdd_plan, build_sdd_spec, build_sdd_subtasks
+from .storage import (
+    get_latest_run_for_pr,
+    increment_ci_fix_rounds,
+    init_storage,
+    save_plan,
+    save_run,
+    save_spec,
+    save_subtasks,
 )
+from .utils.auth import persist_encrypted_github_token
 from .utils.authorship import OPEN_SWE_BOT_NAME
 from .utils.comments import get_recent_comments
 from .utils.github_app import (
@@ -86,6 +96,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     validate_sandbox_startup_config()
+    init_storage()
+    init_observability(_app)
     yield
 
 
@@ -106,7 +118,7 @@ LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL") or os.environ.get(
 )
 
 _AGENT_VERSION_METADATA: dict[str, str] = (
-    {"LANGSMITH_AGENT_VERSION": os.environ["LANGCHAIN_REVISION_ID"]}
+    {"AGENT_VERSION": os.environ["LANGCHAIN_REVISION_ID"]}
     if os.environ.get("LANGCHAIN_REVISION_ID")
     else {}
 )
@@ -1059,136 +1071,16 @@ def verify_linear_signature(body: bytes, signature: str, secret: str) -> bool:
 
 @app.post("/webhooks/linear")
 async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
-    request: Request, background_tasks: BackgroundTasks
+    _request: Request, _background_tasks: BackgroundTasks
 ) -> dict[str, str]:
-    """Handle Linear webhooks.
-
-    Triggers a new LangGraph run when an issue gets the 'open-swe' label added.
-    """
-    logger.info("Received Linear webhook")
-    body = await request.body()
-
-    signature = request.headers.get("Linear-Signature", "")
-    if not verify_linear_signature(body, signature, LINEAR_WEBHOOK_SECRET):
-        logger.warning("Invalid webhook signature")
-        raise HTTPException(status_code=401, detail="Invalid signature")
-
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        logger.exception("Failed to parse webhook JSON")
-        return {"status": "error", "message": "Invalid JSON"}
-
-    if payload.get("type") != "Comment":
-        logger.debug("Ignoring webhook: not a Comment event")
-        return {"status": "ignored", "reason": "Not a Comment event"}
-
-    action = payload.get("action")
-    if action != "create":
-        logger.debug("Ignoring webhook: action is %s, not create", action)
-        return {
-            "status": "ignored",
-            "reason": f"Comment action is '{action}', only processing 'create'",
-        }
-
-    data = payload.get("data", {})
-
-    if data.get("botActor"):
-        logger.debug("Ignoring webhook: comment is from a bot")
-        return {"status": "ignored", "reason": "Comment is from a bot"}
-
-    comment_body = data.get("body", "")
-    bot_message_prefixes = [
-        "🔐 **GitHub Authentication Required**",
-        "✅ **Pull Request Created**",
-        "✅ **Pull Request Updated**",
-        "**Pull Request Created**",
-        "**Pull Request Updated**",
-        "🤖 **Agent Response**",
-        "❌ **Agent Error**",
-    ]
-    for prefix in bot_message_prefixes:
-        if comment_body.startswith(prefix):
-            logger.debug("Ignoring webhook: comment is our own bot message")
-            return {"status": "ignored", "reason": "Comment is our own bot message"}
-    if "@openswe" not in comment_body.lower():
-        logger.debug("Ignoring webhook: comment doesn't mention @openswe")
-        return {"status": "ignored", "reason": "Comment doesn't mention @openswe"}
-
-    issue = data.get("issue", {})
-    if not issue:
-        logger.debug("Ignoring webhook: no issue data in comment")
-        return {"status": "ignored", "reason": "No issue data in comment"}
-
-    # Fetch full issue details to get project info (webhook doesn't include it)
-    issue_id = issue.get("id", "")
-    full_issue = await fetch_linear_issue_details(issue_id)
-    if not full_issue:
-        logger.warning("Failed to fetch full issue details, using webhook data")
-        full_issue = issue
-
-    repo_config = extract_repo_from_text(comment_body, default_owner=DEFAULT_REPO_OWNER)
-
-    if repo_config:
-        logger.debug(
-            "Using repo from comment body: %s/%s",
-            repo_config["owner"],
-            repo_config["name"],
-        )
-    else:
-        team = full_issue.get("team", {})
-        team_name = team.get("name", "") if team else ""
-        project = full_issue.get("project")
-        project_name = project.get("name", "") if project else ""
-
-        team_identifier = team_name.strip() if team_name else ""
-        project_key = project_name.strip() if project_name else ""
-
-        repo_config = get_repo_config_from_team_mapping(team_identifier, project_key)
-
-        logger.debug(
-            "Team/project lookup result",
-            extra={
-                "team_name": team_identifier,
-                "project_name": project_key,
-                "repo_config": repo_config,
-            },
-        )
-
-    if not _is_repo_allowed(repo_config):
-        logger.warning(
-            "Rejecting Linear webhook: repo '%s/%s' not in allowlist",
-            repo_config.get("owner"),
-            repo_config.get("name"),
-        )
-        return {"status": "ignored", "reason": "Repository not in allowlist"}
-
-    repo_owner = repo_config["owner"]
-    repo_name = repo_config["name"]
-
-    issue["triggering_comment"] = comment_body
-    issue["triggering_comment_id"] = data.get("id", "")
-    comment_user = data.get("user", {})
-    if comment_user:
-        issue["comment_author"] = comment_user
-
-    logger.info(
-        "Accepted webhook for issue '%s' (%s), scheduling background task",
-        issue.get("title"),
-        issue.get("id"),
-    )
-    background_tasks.add_task(process_linear_issue, issue, repo_config)
-
-    return {
-        "status": "accepted",
-        "message": f"Processing issue '{issue.get('title')}' for repo {repo_owner}/{repo_name}",
-    }
+    """Linear integration is intentionally disabled for SDD runtime."""
+    return {"status": "ignored", "reason": "Linear integration is disabled"}
 
 
 @app.get("/webhooks/linear")
 async def linear_webhook_verify() -> dict[str, str]:
-    """Verify endpoint for Linear webhook setup."""
-    return {"status": "ok", "message": "Linear webhook endpoint is active"}
+    """Linear integration is disabled."""
+    return {"status": "disabled", "message": "Linear integration is disabled"}
 
 
 @app.post("/webhooks/slack")
@@ -1335,8 +1227,16 @@ async def health_check() -> dict[str, str]:
     return {"status": "healthy"}
 
 
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus-compatible metrics endpoint."""
+    body, content_type = metrics_response()
+    return Response(content=body, media_type=content_type)
+
+
 _SUPPORTED_GH_EVENTS = frozenset(
     [
+        "check_suite",
         "issue_comment",
         "issues",
         "pull_request",
@@ -1417,6 +1317,64 @@ def build_github_issue_update_prompt(github_login: str, title: str, body: str) -
     )
 
 
+def _slug(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.lower())
+
+
+def generate_sdd_ids(repo_config: dict[str, str], issue_number: int) -> tuple[str, str, str]:
+    owner = _slug(repo_config.get("owner", "repo-owner"))
+    repo = _slug(repo_config.get("name", "repo-name"))
+    suffix = f"{owner}-{repo}-{issue_number}"
+    return (f"spec-{suffix}", f"plan-{suffix}", f"subtasks-{suffix}")
+
+
+def generate_thread_scoped_run_id(thread_id: str) -> str:
+    return f"run-{thread_id}-{uuid.uuid4().hex[:8]}"
+
+
+def persist_run_state(
+    *,
+    run_id: str,
+    thread_id: str,
+    source: str,
+    status: str,
+    repo_owner: str,
+    repo_name: str,
+    issue_number: int | None = None,
+    pr_number: int | None = None,
+    ci_fix_rounds: int = 0,
+    metadata_json: dict[str, Any] | None = None,
+) -> None:
+    save_run(
+        run_id=run_id,
+        thread_id=thread_id,
+        source=source,
+        status=status,
+        repo_owner=repo_owner,
+        repo_name=repo_name,
+        issue_number=issue_number,
+        pr_number=pr_number,
+        ci_fix_rounds=ci_fix_rounds,
+        metadata_json=metadata_json,
+    )
+    observe_sdd_run_transition(source, status)
+    record_langfuse_event(
+        name="open_swe_run_state",
+        input_payload={
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "source": source,
+            "status": status,
+            "repo_owner": repo_owner,
+            "repo_name": repo_name,
+            "issue_number": issue_number,
+            "pr_number": pr_number,
+            "ci_fix_rounds": ci_fix_rounds,
+        },
+        metadata=metadata_json or {},
+    )
+
+
 async def _trigger_or_queue_run(
     thread_id: str,
     prompt: str,
@@ -1427,31 +1385,63 @@ async def _trigger_or_queue_run(
     pr_number: int,
 ) -> None:
     """Create a new agent run or queue the message if the thread is busy."""
-    thread_active = await is_thread_active(thread_id)
-    if thread_active:
-        logger.info("Thread %s is busy, queuing GitHub PR comment message", thread_id)
-        await queue_message_for_thread(thread_id, prompt)
-        return
-
-    logger.info("Creating LangGraph run for thread %s from GitHub PR comment", thread_id)
-    langgraph_client = get_client(url=LANGGRAPH_URL)
-    await langgraph_client.runs.create(
-        thread_id,
-        "agent",
-        input={"messages": [{"role": "user", "content": prompt}]},
-        config={
-            "configurable": {
-                "source": "github",
-                "github_login": github_login,
-                "github_user_id": github_user_id,
-                "repo": repo_config,
-                "pr_number": pr_number,
-            },
-            "metadata": _AGENT_VERSION_METADATA,
+    with start_trace_span(
+        "trigger_or_queue_run",
+        {
+            "thread.id": thread_id,
+            "github.pr_number": pr_number,
+            "repo.owner": repo_config["owner"],
+            "repo.name": repo_config["name"],
         },
-        if_not_exists="create",
-    )
-    logger.info("LangGraph run created for thread %s from GitHub PR comment", thread_id)
+    ):
+        run_id = generate_thread_scoped_run_id(thread_id)
+        thread_active = await is_thread_active(thread_id)
+        if thread_active:
+            logger.info("Thread %s is busy, queuing GitHub PR comment message", thread_id)
+            await queue_message_for_thread(thread_id, prompt)
+            await asyncio.to_thread(
+                persist_run_state,
+                run_id=run_id,
+                thread_id=thread_id,
+                source="github",
+                status="queued",
+                repo_owner=repo_config["owner"],
+                repo_name=repo_config["name"],
+                pr_number=pr_number,
+                metadata_json={"reason": "thread_busy"},
+            )
+            return
+
+        logger.info("Creating LangGraph run for thread %s from GitHub PR comment", thread_id)
+        langgraph_client = get_client(url=LANGGRAPH_URL)
+        await asyncio.to_thread(
+            persist_run_state,
+            run_id=run_id,
+            thread_id=thread_id,
+            source="github",
+            status="running",
+            repo_owner=repo_config["owner"],
+            repo_name=repo_config["name"],
+            pr_number=pr_number,
+            metadata_json={"reason": "pr_comment"},
+        )
+        await langgraph_client.runs.create(
+            thread_id,
+            "agent",
+            input={"messages": [{"role": "user", "content": prompt}]},
+            config={
+                "configurable": {
+                    "source": "github",
+                    "github_login": github_login,
+                    "github_user_id": github_user_id,
+                    "repo": repo_config,
+                    "pr_number": pr_number,
+                },
+                "metadata": _AGENT_VERSION_METADATA,
+            },
+            if_not_exists="create",
+        )
+        logger.info("LangGraph run created for thread %s from GitHub PR comment", thread_id)
 
 
 def _is_open_swe_reviewer_request(payload: dict[str, Any]) -> bool:
@@ -2006,50 +1996,114 @@ async def process_github_push_event(payload: dict[str, Any]) -> None:
     )
 
 
-async def _refresh_thread_github_token_after_401(thread_id: str, email: str) -> str | None:
+async def process_github_check_suite(payload: dict[str, Any]) -> None:
+    """Trigger bounded CI auto-fix rounds for agent-created PRs."""
+    with start_trace_span("process_github_check_suite"):
+        check_suite = payload.get("check_suite", {})
+        if check_suite.get("conclusion") != "failure":
+            return
+
+        pull_requests = check_suite.get("pull_requests") or []
+        if not pull_requests:
+            return
+        pr_ref = pull_requests[0]
+        pr_number = pr_ref.get("number")
+        if not isinstance(pr_number, int):
+            return
+
+        repo = payload.get("repository", {})
+        repo_owner = repo.get("owner", {}).get("login", "")
+        repo_name = repo.get("name", "")
+        if not repo_owner or not repo_name:
+            return
+
+        latest = await asyncio.to_thread(get_latest_run_for_pr, repo_owner, repo_name, pr_number)
+        if not latest:
+            logger.info(
+                "Skipping CI auto-fix for %s/%s#%s: no tracked run",
+                repo_owner,
+                repo_name,
+                pr_number,
+            )
+            return
+
+        max_rounds = get_settings().max_ci_fix_rounds
+        run_id = str(latest.get("run_id"))
+        current_rounds = int(latest.get("ci_fix_rounds") or 0)
+        if current_rounds >= max_rounds:
+            logger.info(
+                "Skipping CI auto-fix for %s/%s#%s: reached max rounds (%s)",
+                repo_owner,
+                repo_name,
+                pr_number,
+                max_rounds,
+            )
+            return
+
+        thread_id = str(latest.get("thread_id") or "")
+        if not thread_id:
+            return
+
+        ci_url = check_suite.get("html_url") or ""
+        fix_prompt = (
+            f"CI failed for PR #{pr_number}. Analyze failure details and apply a fix. "
+            f"Run lint/tests relevant to the failure and update the PR. CI URL: {ci_url}"
+        )
+        rounds = await asyncio.to_thread(increment_ci_fix_rounds, run_id)
+        observe_ci_fix_round(repo_owner, repo_name)
+        await asyncio.to_thread(
+            persist_run_state,
+            run_id=run_id,
+            thread_id=thread_id,
+            source="github",
+            status="ci_fixing",
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            pr_number=pr_number,
+            ci_fix_rounds=rounds,
+            metadata_json={"check_suite_id": check_suite.get("id"), "ci_url": ci_url},
+        )
+        await _trigger_or_queue_run(
+            thread_id,
+            fix_prompt,
+            github_login=payload.get("sender", {}).get("login", "") or "open-swe[bot]",
+            github_user_id=payload.get("sender", {}).get("id"),
+            repo_config={"owner": repo_owner, "name": repo_name},
+            pr_number=pr_number,
+        )
+
+
+async def _refresh_thread_github_token_after_401(thread_id: str) -> str | None:
     """Invalidate the cached token after a 401 and try to resolve a fresh one."""
     logger.warning(
         "GitHub returned 401 for thread %s; invalidating cached token and re-resolving",
         thread_id,
     )
     await invalidate_cached_github_token(thread_id)
-    return await _get_or_resolve_thread_github_token(thread_id, email)
+    return await _get_or_resolve_thread_github_token(thread_id)
 
 
-async def _get_or_resolve_thread_github_token(thread_id: str, email: str) -> str | None:
+async def _get_or_resolve_thread_github_token(thread_id: str) -> str | None:
     """Resolve and persist a GitHub token for a thread when available.
 
     Skips the cached ciphertext when its ``github_token_expires_at`` is past.
-    In bot-token-only mode, returns a fresh GitHub App installation token
-    instead of resolving per-user OAuth tokens.
+    Falls back to a fresh GitHub App installation token when no cached token
+    is available.
     """
-    if is_bot_token_only_mode():
-        bot_token, expires_at = await get_github_app_installation_token_with_expiry()
-        if bot_token:
-            try:
-                await persist_encrypted_github_token(thread_id, bot_token, expires_at=expires_at)
-            except Exception:
-                logger.warning("Could not persist bot token for thread %s", thread_id)
-            return bot_token
-        logger.warning("Bot-token-only mode but GitHub App token unavailable")
-        return None
-
     github_token, _encrypted_token, _expires_at = await get_github_token_from_thread(thread_id)
     if github_token:
         return github_token
 
-    auth_result = await resolve_github_token_from_email(email)
-    github_token = auth_result.get("token")
-    if not github_token:
+    installation_token, expires_at = await get_github_app_installation_token_with_expiry()
+    if not installation_token:
+        logger.warning("GitHub App installation token unavailable for thread %s", thread_id)
         return None
 
     try:
-        await persist_encrypted_github_token(
-            thread_id, github_token, expires_at=auth_result.get("expires_at")
-        )
+        await persist_encrypted_github_token(thread_id, installation_token, expires_at=expires_at)
     except Exception:
-        logger.warning("Could not persist GitHub token for thread %s", thread_id)
-    return github_token
+        logger.warning("Could not persist GitHub App token for thread %s", thread_id)
+    return installation_token
 
 
 async def process_github_pr_comment(payload: dict[str, Any], event_type: str) -> None:
@@ -2112,7 +2166,7 @@ async def process_github_pr_comment(payload: dict[str, Any], event_type: str) ->
         logger.warning("No email mapping for GitHub user '%s', skipping", github_login)
         return
 
-    github_token = await _get_or_resolve_thread_github_token(thread_id, email)
+    github_token = await _get_or_resolve_thread_github_token(thread_id)
     if not github_token:
         logger.warning("No GitHub token for thread %s, skipping", thread_id)
         return
@@ -2128,7 +2182,7 @@ async def process_github_pr_comment(payload: dict[str, Any], event_type: str) ->
                 node_id=node_id,
             )
         except GitHubAuthError:
-            github_token = await _refresh_thread_github_token_after_401(thread_id, email)
+            github_token = await _refresh_thread_github_token_after_401(thread_id)
             if not github_token:
                 logger.warning("Re-auth failed for thread %s after 401; skipping", thread_id)
                 return
@@ -2150,7 +2204,7 @@ async def process_github_pr_comment(payload: dict[str, Any], event_type: str) ->
             repo_config, pr_number, token=github_token
         )
     except GitHubAuthError:
-        github_token = await _refresh_thread_github_token_after_401(thread_id, email)
+        github_token = await _refresh_thread_github_token_after_401(thread_id)
         if not github_token:
             logger.warning("Re-auth failed for thread %s after 401; skipping", thread_id)
             return
@@ -2209,7 +2263,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
 
     thread_id = generate_thread_id_from_github_issue(issue_id)
     existing_thread = await _thread_exists(thread_id)
-    github_token = await _get_or_resolve_thread_github_token(thread_id, email)
+    github_token = await _get_or_resolve_thread_github_token(thread_id)
     app_token = await get_github_app_installation_token()
     reaction_token = github_token or app_token
     comment = payload.get("comment", {})
@@ -2226,7 +2280,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
                     token=reaction_token,
                 )
             except GitHubAuthError:
-                github_token = await _refresh_thread_github_token_after_401(thread_id, email)
+                github_token = await _refresh_thread_github_token_after_401(thread_id)
                 reaction_token = github_token or app_token
                 reacted = False
                 if reaction_token:
@@ -2260,7 +2314,7 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
                 repo_config, issue_number, token=github_token or app_token
             )
         except GitHubAuthError:
-            github_token = await _refresh_thread_github_token_after_401(thread_id, email)
+            github_token = await _refresh_thread_github_token_after_401(thread_id)
             comments = await fetch_issue_comments(
                 repo_config, issue_number, token=github_token or app_token
             )
@@ -2275,6 +2329,45 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
             )
             comments.sort(key=lambda item: item.get("created_at", ""))
 
+        spec_id, plan_id, subtasks_id = generate_sdd_ids(repo_config, issue_number)
+        issue_ref = {
+            "provider": "github",
+            "owner": repo_config["owner"],
+            "repo": repo_config["name"],
+            "number": issue_number,
+            "url": issue_url,
+        }
+        spec_payload = build_sdd_spec(
+            spec_id=spec_id,
+            issue=issue_ref,
+            issue_title=title,
+            issue_body=description,
+            comments=comments,
+        )
+        plan_payload = build_sdd_plan(
+            plan_id=plan_id,
+            spec_id=spec_id,
+            spec_payload=spec_payload,
+        )
+        subtasks_payload = build_sdd_subtasks(
+            subtasks_id=subtasks_id,
+            plan_id=plan_id,
+            plan_payload=plan_payload,
+        )
+        await asyncio.to_thread(
+            save_spec,
+            spec_id=spec_id,
+            thread_id=thread_id,
+            repo_owner=repo_config["owner"],
+            repo_name=repo_config["name"],
+            issue_number=issue_number,
+            payload=spec_payload,
+        )
+        await asyncio.to_thread(save_plan, plan_id=plan_id, spec_id=spec_id, payload=plan_payload)
+        await asyncio.to_thread(
+            save_subtasks, subtasks_id=subtasks_id, plan_id=plan_id, payload=subtasks_payload
+        )
+
         prompt = build_github_issue_prompt(
             repo_config,
             issue_number,
@@ -2284,6 +2377,13 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
             comments,
             github_login=github_login,
             issue_author=issue_author,
+        )
+        prompt += (
+            "\n\n## SDD Artifacts (strict)\n"
+            f"- SpecId: {spec_id}\n"
+            f"- PlanId: {plan_id}\n"
+            f"- SubtasksId: {subtasks_id}\n"
+            "Follow these artifacts as the source of truth for implementation."
         )
     configurable: dict[str, Any] = {
         "source": "github",
@@ -2305,6 +2405,18 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         return
 
     logger.info("Creating LangGraph run for thread %s from GitHub issue", thread_id)
+    run_id = generate_thread_scoped_run_id(thread_id)
+    await asyncio.to_thread(
+        persist_run_state,
+        run_id=run_id,
+        thread_id=thread_id,
+        source="github",
+        status="queued",
+        repo_owner=repo_config["owner"],
+        repo_name=repo_config["name"],
+        issue_number=issue_number,
+        metadata_json={"event_type": event_type},
+    )
     langgraph_client = get_client(url=LANGGRAPH_URL)
     await langgraph_client.runs.create(
         thread_id,
@@ -2312,6 +2424,17 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         input={"messages": [{"role": "user", "content": prompt}]},
         config={"configurable": configurable, "metadata": _AGENT_VERSION_METADATA},
         if_not_exists="create",
+    )
+    await asyncio.to_thread(
+        persist_run_state,
+        run_id=run_id,
+        thread_id=thread_id,
+        source="github",
+        status="running",
+        repo_owner=repo_config["owner"],
+        repo_name=repo_config["name"],
+        issue_number=issue_number,
+        metadata_json={"event_type": event_type},
     )
     logger.info("LangGraph run created for thread %s from GitHub issue", thread_id)
 
@@ -2392,6 +2515,16 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
         logger.info("Accepted GitHub push webhook, scheduling reviewer watch evaluation")
         background_tasks.add_task(process_github_push_event, payload)
         return {"status": "accepted", "message": "Processing GitHub push for reviewer watch"}
+
+    if event_type == "check_suite":
+        action = payload.get("action", "")
+        if action != "completed":
+            return {"status": "ignored", "reason": "Unsupported check_suite action"}
+        if not _is_repo_allowed(webhook_repo_config):
+            return {"status": "ignored", "reason": "Repository not in allowlist"}
+        logger.info("Accepted GitHub check_suite completion webhook for CI auto-fix evaluation")
+        background_tasks.add_task(process_github_check_suite, payload)
+        return {"status": "accepted", "message": "Processing CI check suite result"}
 
     if not _is_repo_allowed(webhook_repo_config):
         logger.warning(

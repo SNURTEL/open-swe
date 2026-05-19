@@ -227,7 +227,7 @@ def test_process_github_pr_comment_invalidates_and_reauths_on_401(
 
     tokens = iter(["stale-token", "fresh-token"])
 
-    async def fake_get_or_resolve(thread_id: str, email: str) -> str | None:
+    async def fake_get_or_resolve(thread_id: str) -> str | None:
         token = next(tokens)
         resolves.append(token)
         return token
@@ -328,3 +328,97 @@ def test_publish_review_invalidates_cached_token_on_401(
     assert "401" in result["error"]
     assert invalidated["calls"] == 1
     assert invalidated.get("thread_id") == "thread-xyz"
+
+
+def test_get_or_resolve_thread_github_token_uses_cached_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import webapp
+
+    called: dict[str, bool] = {"app_token": False}
+
+    async def fake_get_github_token_from_thread(
+        thread_id: str,
+    ) -> tuple[str | None, str | None, str | None]:
+        return "cached-token", "enc", "2026-01-01T00:00:00Z"
+
+    async def fake_get_github_app_installation_token_with_expiry() -> tuple[str | None, str | None]:
+        called["app_token"] = True
+        return "app-token", "2026-01-02T00:00:00Z"
+
+    monkeypatch.setattr(webapp, "get_github_token_from_thread", fake_get_github_token_from_thread)
+    monkeypatch.setattr(
+        webapp,
+        "get_github_app_installation_token_with_expiry",
+        fake_get_github_app_installation_token_with_expiry,
+    )
+
+    token = asyncio.run(webapp._get_or_resolve_thread_github_token("thread-1"))
+    assert token == "cached-token"
+    assert called["app_token"] is False
+
+
+def test_get_or_resolve_thread_github_token_falls_back_to_app_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import webapp
+
+    persisted: dict[str, str | None] = {}
+
+    async def fake_get_github_token_from_thread(
+        thread_id: str,
+    ) -> tuple[str | None, str | None, str | None]:
+        return None, None, None
+
+    async def fake_get_github_app_installation_token_with_expiry() -> tuple[str | None, str | None]:
+        return "app-token", "2026-01-02T00:00:00Z"
+
+    async def fake_persist_encrypted_github_token(
+        thread_id: str, token: str, expires_at: str | None = None
+    ) -> str:
+        persisted["thread_id"] = thread_id
+        persisted["token"] = token
+        persisted["expires_at"] = expires_at
+        return "enc"
+
+    monkeypatch.setattr(webapp, "get_github_token_from_thread", fake_get_github_token_from_thread)
+    monkeypatch.setattr(
+        webapp,
+        "get_github_app_installation_token_with_expiry",
+        fake_get_github_app_installation_token_with_expiry,
+    )
+    monkeypatch.setattr(
+        webapp, "persist_encrypted_github_token", fake_persist_encrypted_github_token
+    )
+
+    token = asyncio.run(webapp._get_or_resolve_thread_github_token("thread-2"))
+    assert token == "app-token"
+    assert persisted == {
+        "thread_id": "thread-2",
+        "token": "app-token",
+        "expires_at": "2026-01-02T00:00:00Z",
+    }
+
+
+def test_get_or_resolve_thread_github_token_returns_none_when_app_token_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import webapp
+
+    async def fake_get_github_token_from_thread(
+        thread_id: str,
+    ) -> tuple[str | None, str | None, str | None]:
+        return None, None, None
+
+    async def fake_get_github_app_installation_token_with_expiry() -> tuple[str | None, str | None]:
+        return None, None
+
+    monkeypatch.setattr(webapp, "get_github_token_from_thread", fake_get_github_token_from_thread)
+    monkeypatch.setattr(
+        webapp,
+        "get_github_app_installation_token_with_expiry",
+        fake_get_github_app_installation_token_with_expiry,
+    )
+
+    token = asyncio.run(webapp._get_or_resolve_thread_github_token("thread-3"))
+    assert token is None

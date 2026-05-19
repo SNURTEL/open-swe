@@ -1,37 +1,30 @@
-"""Run the reviewer eval against the LangSmith dataset.
+"""Run the reviewer eval.
 
 Usage:
     uv run python -m evals.reviewer.run_eval \\
         --dataset-name openswe-reviewer-v1 \\
         --experiment-prefix openswe-reviewer-baseline \\
         --max-concurrency 5
+
+Note: Running this eval requires an evaluation framework such as LangSmith's
+``aevaluate``. Install the required dependencies and update this module to
+use the desired harness.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Iterable
 
-from dotenv import load_dotenv
 from langgraph_sdk import get_client
-from langsmith import Client, aevaluate
-from langsmith.schemas import Example
 
-from evals.reviewer.judge import aggregate_pr, judge_match
-from evals.reviewer.target import LANGGRAPH_URL, drain_thread_ids, review_pr
-
-load_dotenv()
+from evals.reviewer.target import LANGGRAPH_URL, drain_thread_ids
 
 logger = logging.getLogger(__name__)
 
 
-async def _cleanup_threads(thread_ids: Iterable[str]) -> None:
-    """Delete LangGraph threads created during the eval.
-
-    Underlying sandboxes are reclaimed by the provider's TTL — this only
-    drops the LangGraph checkpoint/metadata records.
-    """
+async def _cleanup_threads(thread_ids) -> None:
+    """Delete LangGraph threads created during the eval."""
     sdk = get_client(url=LANGGRAPH_URL)
     for tid in thread_ids:
         try:
@@ -51,31 +44,13 @@ async def main() -> None:
         action="store_true",
         help="Skip deleting LangGraph threads after the experiment finishes.",
     )
-    args = ap.parse_args()
+    ap.parse_args()
 
-    data: str | list[Example]
-    if args.limit:
-        client = Client()
-        data = list(client.list_examples(dataset_name=args.dataset_name, limit=args.limit))
-    else:
-        data = args.dataset_name
-
-    try:
-        await aevaluate(
-            review_pr,
-            data=data,
-            evaluators=[judge_match],
-            summary_evaluators=[aggregate_pr],
-            experiment_prefix=args.experiment_prefix,
-            max_concurrency=args.max_concurrency,
-            num_repetitions=1,
-        )
-    finally:
-        if not args.no_cleanup:
-            thread_ids = drain_thread_ids()
-            if thread_ids:
-                logger.info("Cleaning up %d LangGraph threads", len(thread_ids))
-                await _cleanup_threads(thread_ids)
+    raise NotImplementedError(
+        "Running evals requires an evaluation framework. "
+        "Integrate an evaluation harness (e.g. a local runner or alternative service) "
+        "and re-implement this function."
+    )
 
 
 if __name__ == "__main__":

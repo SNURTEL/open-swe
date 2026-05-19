@@ -1,7 +1,7 @@
 """Tests for agent.utils.repo and Linear webhook repo override behavior."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -55,7 +55,7 @@ class TestExtractRepoFromText:
 
 
 class TestLinearWebhookRepoOverride:
-    """Test that the Linear webhook handler checks comment body for repo config first."""
+    """Linear webhook is disabled in SDD runtime."""
 
     @pytest.fixture()
     def _base_payload(self) -> dict:
@@ -77,37 +77,14 @@ class TestLinearWebhookRepoOverride:
     async def test_comment_repo_overrides_team_mapping(self, _base_payload: dict) -> None:
         from agent.webapp import linear_webhook
 
-        with (
-            patch("agent.webapp.verify_linear_signature", return_value=True),
-            patch(
-                "agent.webapp.fetch_linear_issue_details",
-                new_callable=AsyncMock,
-                return_value={
-                    "id": "issue-456",
-                    "title": "Test issue",
-                    "identifier": "TEST-1",
-                    "url": "https://linear.app/test/issue/TEST-1",
-                    "team": {"id": "t1", "name": "Some Team", "key": "ST"},
-                    "project": {"id": "p1", "name": "Some Project"},
-                    "comments": {"nodes": []},
-                },
-            ),
-            patch("agent.webapp._is_repo_allowed", return_value=True),
-            patch("agent.webapp.BackgroundTasks"),
-        ):
-            mock_request = AsyncMock()
-            mock_request.body.return_value = json.dumps(_base_payload).encode()
-            mock_request.headers = {"Linear-Signature": "valid"}
-
-            bg_tasks = AsyncMock()
-            result = await linear_webhook(mock_request, bg_tasks)
-
-            assert result["status"] == "accepted"
-            assert "custom-org/custom-repo" in result["message"]
-
-            call_args = bg_tasks.add_task.call_args
-            repo_config = call_args[0][2]
-            assert repo_config == {"owner": "custom-org", "name": "custom-repo"}
+        mock_request = AsyncMock()
+        mock_request.body.return_value = json.dumps(_base_payload).encode()
+        mock_request.headers = {"Linear-Signature": "valid"}
+        bg_tasks = AsyncMock()
+        result = await linear_webhook(mock_request, bg_tasks)
+        assert result["status"] == "ignored"
+        assert "disabled" in result["reason"]
+        bg_tasks.add_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_falls_back_to_team_mapping_when_no_repo_in_comment(self) -> None:
@@ -127,33 +104,11 @@ class TestLinearWebhookRepoOverride:
             },
         }
 
-        with (
-            patch("agent.webapp.verify_linear_signature", return_value=True),
-            patch(
-                "agent.webapp.fetch_linear_issue_details",
-                new_callable=AsyncMock,
-                return_value={
-                    "id": "issue-456",
-                    "title": "Test issue",
-                    "identifier": "TEST-1",
-                    "url": "https://linear.app/test/issue/TEST-1",
-                    "team": {"id": "t1", "name": "Open SWE", "key": "OS"},
-                    "project": None,
-                    "comments": {"nodes": []},
-                },
-            ),
-            patch("agent.webapp._is_repo_allowed", return_value=True),
-        ):
-            mock_request = AsyncMock()
-            mock_request.body.return_value = json.dumps(payload).encode()
-            mock_request.headers = {"Linear-Signature": "valid"}
-
-            bg_tasks = AsyncMock()
-            result = await linear_webhook(mock_request, bg_tasks)
-
-            assert result["status"] == "accepted"
-            assert "langchain-ai/open-swe" in result["message"]
-
-            call_args = bg_tasks.add_task.call_args
-            repo_config = call_args[0][2]
-            assert repo_config == {"owner": "langchain-ai", "name": "open-swe"}
+        mock_request = AsyncMock()
+        mock_request.body.return_value = json.dumps(payload).encode()
+        mock_request.headers = {"Linear-Signature": "valid"}
+        bg_tasks = AsyncMock()
+        result = await linear_webhook(mock_request, bg_tasks)
+        assert result["status"] == "ignored"
+        assert "disabled" in result["reason"]
+        bg_tasks.add_task.assert_not_called()

@@ -240,7 +240,7 @@ def test_post_slack_trace_reply_emits_tip_only_when_no_trace_url(
     monkeypatch.setattr(
         slack_utils, "post_slack_thread_reply_with_ts", fake_post_slack_thread_reply_with_ts
     )
-    monkeypatch.setattr(slack_utils, "get_langsmith_trace_url", lambda thread_id: None)
+    monkeypatch.setattr(slack_utils, "get_trace_url", lambda thread_id: None)
 
     asyncio.run(post_slack_trace_reply("C123", "1.0", "thread-id"))
 
@@ -271,7 +271,7 @@ def test_post_slack_trace_reply_includes_trace_link_and_tip(
     monkeypatch.setattr(
         slack_utils, "post_slack_thread_reply_with_ts", fake_post_slack_thread_reply_with_ts
     )
-    monkeypatch.setattr(slack_utils, "get_langsmith_trace_url", lambda thread_id: "https://smith/x")
+    monkeypatch.setattr(slack_utils, "get_trace_url", lambda thread_id: "https://smith/x")
 
     asyncio.run(post_slack_trace_reply("C123", "1.0", "thread-id"))
 

@@ -1,0 +1,140 @@
+version: "1.0"
+plan_id: "sdd-open-swe-migration"
+status: "in_progress"
+phases:
+  - id: "phase-0"
+    name: "orientation"
+    status: "completed"
+    outputs:
+      - "entrypoints mapped (webhooks/get_agent/sandbox/model)"
+      - "baseline lint and tests executed"
+  - id: "phase-1"
+    name: "architecture-design"
+    status: "completed"
+    artifacts:
+      - "docs/sdd-architecture.md"
+  - id: "phase-2"
+    name: "sdd-format-definition"
+    status: "completed"
+    artifacts:
+      - "docs/sdd-plan.yaml"
+
+sdd_formats:
+  SDD_SPEC:
+    type: "object"
+    required:
+      - "spec_id"
+      - "issue"
+      - "context"
+      - "requirements"
+      - "constraints"
+      - "acceptance_criteria"
+      - "risks"
+      - "version"
+    fields:
+      spec_id: { type: "string", pattern: "^spec-[a-z0-9-]+$" }
+      issue:
+        type: "object"
+        required: ["provider", "owner", "repo", "number", "url"]
+      context:
+        type: "array"
+        items: { type: "string" }
+      requirements:
+        type: "array"
+        items:
+          type: "object"
+          required: ["id", "statement", "priority"]
+      constraints:
+        type: "array"
+        items: { type: "string" }
+      acceptance_criteria:
+        type: "array"
+        items:
+          type: "object"
+          required: ["id", "statement", "validation"]
+      risks:
+        type: "array"
+        items:
+          type: "object"
+          required: ["id", "description", "mitigation"]
+      version: { type: "integer", minimum: 1 }
+
+  SDD_PLAN:
+    type: "object"
+    required:
+      - "plan_id"
+      - "spec_id"
+      - "tasks"
+      - "dependencies"
+      - "definition_of_done"
+      - "version"
+    fields:
+      plan_id: { type: "string", pattern: "^plan-[a-z0-9-]+$" }
+      spec_id: { type: "string", pattern: "^spec-[a-z0-9-]+$" }
+      tasks:
+        type: "array"
+        items:
+          type: "object"
+          required: ["task_id", "title", "owner", "status", "exit_criteria"]
+      dependencies:
+        type: "array"
+        items:
+          type: "object"
+          required: ["from_task_id", "to_task_id", "type"]
+      definition_of_done:
+        type: "array"
+        items: { type: "string" }
+      version: { type: "integer", minimum: 1 }
+
+  SDD_SUBTASKS:
+    type: "object"
+    required:
+      - "subtasks_id"
+      - "plan_id"
+      - "items"
+      - "version"
+    fields:
+      subtasks_id: { type: "string", pattern: "^subtasks-[a-z0-9-]+$" }
+      plan_id: { type: "string", pattern: "^plan-[a-z0-9-]+$" }
+      items:
+        type: "array"
+        items:
+          type: "object"
+          required:
+            - "subtask_id"
+            - "task_id"
+            - "title"
+            - "status"
+            - "validation_steps"
+            - "artifacts"
+      version: { type: "integer", minimum: 1 }
+
+next_steps:
+  - step_id: "step-1"
+    title: "add SDD schema and storage adapter"
+    priority: "high"
+    depends_on: []
+  - step_id: "step-2"
+    title: "introduce strict format serializers and validators"
+    priority: "high"
+    depends_on: ["step-1"]
+  - step_id: "step-3"
+    title: "wire SDD generation and persistence into GitHub issue flow"
+    priority: "high"
+    depends_on: ["step-1", "step-2"]
+  - step_id: "step-4"
+    title: "add CI-fix loop"
+    priority: "medium"
+    depends_on: ["step-3"]
+  - step_id: "step-5"
+    title: "remove Linear and managed sandbox providers"
+    priority: "high"
+    depends_on: ["step-3"]
+  - step_id: "step-6"
+    title: "update docs, env defaults, and deployment manifests"
+    priority: "medium"
+    depends_on: ["step-4", "step-5"]
+  - step_id: "step-7"
+    title: "run lint/tests and stabilize"
+    priority: "high"
+    depends_on: ["step-6"]

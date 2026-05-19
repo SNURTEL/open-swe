@@ -1,8 +1,7 @@
-"""Build the LangSmith dataset for the reviewer eval.
+"""Build the eval dataset for the reviewer eval.
 
 Reads golden_comments/*.json (martian offline benchmark goldens), resolves
-each PR's base/head SHAs via `gh`, and uploads one example per PR to a
-LangSmith dataset.
+each PR's base/head SHAs via `gh`, and builds a local dataset.
 
 Usage:
     uv run python -m evals.reviewer.build_dataset \\
@@ -19,7 +18,6 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langsmith import Client
 
 load_dotenv()
 
@@ -93,25 +91,10 @@ def build_example(entry: dict) -> dict:
 
 
 def upload(dataset_name: str, examples: list[dict]) -> None:
-    client = Client()
-    existing = next((d for d in client.list_datasets(dataset_name=dataset_name)), None)
-    if existing:
-        print(
-            f"Dataset {dataset_name!r} already exists ({existing.id}); aborting.", file=sys.stderr
-        )
-        print("Delete it in the LangSmith UI or pass --dataset-name <new>.", file=sys.stderr)
-        sys.exit(1)
-    ds = client.create_dataset(
-        dataset_name=dataset_name,
-        description="Open SWE Reviewer baseline — 50 PRs from withmartian/code-review-benchmark goldens.",
+    raise NotImplementedError(
+        "Dataset upload requires an evaluation service client. "
+        "Integrate the desired service and re-implement this function."
     )
-    client.create_examples(
-        dataset_id=ds.id,
-        inputs=[e["inputs"] for e in examples],
-        outputs=[e["outputs"] for e in examples],
-        metadata=[e["metadata"] for e in examples],
-    )
-    print(f"Uploaded {len(examples)} examples to {dataset_name} ({ds.id}).")
 
 
 def main() -> None:

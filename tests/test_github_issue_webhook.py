@@ -900,9 +900,8 @@ def test_request_pr_review_tool_uses_shared_trigger(monkeypatch) -> None:
 def test_process_github_issue_uses_resolved_user_token_for_reaction(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    async def fake_get_or_resolve_thread_github_token(thread_id: str, email: str) -> str | None:
+    async def fake_get_or_resolve_thread_github_token(thread_id: str) -> str | None:
         captured["thread_id"] = thread_id
-        captured["email"] = email
         return "user-token"
 
     async def fake_get_github_app_installation_token() -> str | None:
@@ -977,7 +976,7 @@ def test_process_github_issue_uses_resolved_user_token_for_reaction(monkeypatch)
 def test_process_github_issue_existing_thread_uses_followup_prompt(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    async def fake_get_or_resolve_thread_github_token(thread_id: str, email: str) -> str | None:
+    async def fake_get_or_resolve_thread_github_token(thread_id: str) -> str | None:
         return "user-token"
 
     async def fake_get_github_app_installation_token() -> str | None:

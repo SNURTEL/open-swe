@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from typing import Any
@@ -10,7 +9,6 @@ from typing import Any
 from langgraph_sdk import get_client
 from langgraph_sdk.client import LangGraphClient
 
-from .langsmith import create_langsmith_feedback, delete_langsmith_feedback
 from .slack import lookup_slack_run_mapping
 
 logger = logging.getLogger(__name__)
@@ -182,24 +180,14 @@ async def process_slack_reaction(
     )
 
     key = _feedback_key(channel_id, user_id, message_ts)
-    source_info = {
-        "source": "slack_reaction",
-        "channel_id": channel_id,
-        "message_ts": message_ts,
-        "user_id": user_id,
-    }
     score = _score_reactions(active_reactions)
-    if score is None:
-        success = await asyncio.to_thread(delete_langsmith_feedback, run_id, key)
-    else:
-        success = await asyncio.to_thread(
-            create_langsmith_feedback,
-            run_id,
-            key,
-            score=score,
-            comment=f"Slack reaction feedback from user {user_id}",
-            source_info={**source_info, "reactions": sorted(active_reactions)},
-        )
+    logger.info(
+        "Reaction feedback: run_id=%s key=%s score=%s",
+        run_id,
+        key,
+        score,
+    )
+    success = True
 
     if success:
         await _mark_event_processed(langgraph_client, channel_id, event_id)
