@@ -1,4 +1,4 @@
-"""Mapping of GitHub usernames to LangSmith email addresses.
+"""Mapping of GitHub usernames to email addresses.
 
 Add entries here as:
     "github-username": "user@example.com",

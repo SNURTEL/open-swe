@@ -118,7 +118,7 @@ LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL") or os.environ.get(
 )
 
 _AGENT_VERSION_METADATA: dict[str, str] = (
-    {"LANGSMITH_AGENT_VERSION": os.environ["LANGCHAIN_REVISION_ID"]}
+    {"AGENT_VERSION": os.environ["LANGCHAIN_REVISION_ID"]}
     if os.environ.get("LANGCHAIN_REVISION_ID")
     else {}
 )

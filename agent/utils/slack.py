@@ -719,7 +719,7 @@ def _format_trace_reply(trace_url: str | None) -> str:
 
 async def post_slack_trace_reply(channel_id: str, thread_ts: str, thread_id: str) -> str | None:
     """Post an initial status reply in a Slack thread and return its timestamp."""
-    trace_url = get_langsmith_trace_url(thread_id)
+    trace_url = get_trace_url(thread_id)
     return await post_slack_thread_reply_with_ts(
         channel_id,
         thread_ts,
@@ -857,11 +857,11 @@ async def lookup_run_id_for_slack_message(
     return run_id if isinstance(run_id, str) and run_id else None
 
 
-def get_langsmith_trace_url(thread_id: str) -> str | None:
-    """Backward-compatible trace URL hook.
+def get_trace_url(thread_id: str) -> str | None:
+    """Return a trace URL for the given thread ID, or None if not configured.
 
-    Returns None by default. Deployments can override via monkeypatch/tests or
-    by setting OPEN_SWE_TRACE_BASE_URL.
+    Reads OPEN_SWE_TRACE_BASE_URL from the environment. Returns None when the
+    variable is unset, so callers can skip the link gracefully.
     """
     base_url = os.environ.get("OPEN_SWE_TRACE_BASE_URL", "").strip()
     if not base_url:

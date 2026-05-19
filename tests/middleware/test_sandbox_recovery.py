@@ -4,14 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
-from langsmith.sandbox import SandboxClientError
 
 from agent.middleware.sandbox_circuit_breaker import (
     SANDBOX_UNRECOVERABLE_MESSAGE,
     SandboxCircuitBreakerMiddleware,
 )
 from agent.middleware.tool_error_handler import ToolErrorMiddleware
-from agent.utils.sandbox_state import SANDBOX_BACKENDS
 
 
 class FakeSandboxBackend:
@@ -43,43 +41,6 @@ def _sandbox_error_message(tool_call_id: str, sandbox_id: str = "sb-dead") -> To
         tool_call_id=tool_call_id,
         status="error",
     )
-
-
-@pytest.mark.asyncio
-async def test_sandbox_client_error_recreates_sandbox() -> None:
-    middleware = ToolErrorMiddleware()
-    request = _tool_request()
-    backend = FakeSandboxBackend()
-
-    async def handler(_request: ToolCallRequest) -> ToolMessage:
-        raise SandboxClientError("Sandbox request timed out: sb-dead")
-
-    try:
-        with (
-            patch("agent.server._recreate_sandbox", new_callable=AsyncMock) as mock_recreate,
-            patch("agent.server.client") as mock_client,
-        ):
-            mock_recreate.return_value = backend
-            mock_client.threads.update = AsyncMock()
-
-            result = await middleware.awrap_tool_call(request, handler)
-
-        assert isinstance(result, ToolMessage)
-        mock_recreate.assert_awaited_once_with("thread-1")
-        mock_client.threads.update.assert_awaited_once_with(
-            thread_id="thread-1",
-            metadata={"sandbox_id": "sb-new"},
-        )
-        assert SANDBOX_BACKENDS["thread-1"] is backend
-
-        payload = json.loads(result.content)
-        assert payload["status"] == "error"
-        assert payload["error_type"] == "SandboxClientError"
-        assert payload["recovery"] == "sandbox_recreated_after_client_error"
-        assert payload["previous_error"] == "Sandbox request timed out: sb-dead"
-        assert "sb-new" in payload["error"]
-    finally:
-        SANDBOX_BACKENDS.pop("thread-1", None)
 
 
 def test_repeated_sandbox_errors_trigger_circuit_breaker_once() -> None:

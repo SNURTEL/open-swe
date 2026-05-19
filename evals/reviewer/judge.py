@@ -18,7 +18,6 @@ from typing import Any
 from uuid import UUID
 
 from langchain_anthropic import ChatAnthropic
-from langsmith.schemas import Example, Run
 
 JUDGE_MODEL = "claude-opus-4-5"
 
@@ -105,7 +104,7 @@ def _drain_counts() -> list[dict[str, int | float]]:
     return snapshot
 
 
-def judge_match(run: Run, example: Example) -> dict[str, Any]:
+def judge_match(run: Any, example: Any) -> dict[str, Any]:
     """Per-example evaluator: compute precision/recall/f1/tp/fp/fn against goldens.
 
     Stashes the raw counts on a process-local cache keyed by ``example.id`` so
@@ -160,7 +159,7 @@ def _f1(p: float, r: float) -> float:
     return 2 * p * r / (p + r) if (p + r) else 0.0
 
 
-def aggregate_pr(runs: list[Run], examples: list[Example]) -> dict[str, Any]:
+def aggregate_pr(runs: list[Any], examples: list[Any]) -> dict[str, Any]:
     """Summary evaluator: micro/macro precision-recall-F1 across the experiment.
 
     Reads the per-example counts that ``judge_match`` stashed in the

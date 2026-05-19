@@ -70,7 +70,7 @@ def _build_configurable(inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 async def review_pr(inputs: dict[str, Any]) -> dict[str, Any]:
-    """LangSmith target: run the reviewer agent on one PR."""
+    """Target function: run the reviewer agent on one PR."""
     client = get_client(url=LANGGRAPH_URL)
     thread = await client.threads.create()
     thread_id: str = thread["thread_id"]

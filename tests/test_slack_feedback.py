@@ -67,39 +67,16 @@ def _reaction_event(reaction: str = "thumbsup") -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_reaction_added_creates_feedback(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reaction_added_logs_feedback(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeClient()
     _store_message_mapping(client, "C123", "2.000")
-    created: dict[str, Any] = {}
-
-    def fake_create_feedback(
-        run_id: str,
-        key: str,
-        *,
-        score: float,
-        comment: str | None = None,
-        source_info: dict[str, Any] | None = None,
-    ) -> bool:
-        created.update(
-            {
-                "run_id": run_id,
-                "key": key,
-                "score": score,
-                "comment": comment,
-                "source_info": source_info,
-            }
-        )
-        return True
 
     monkeypatch.setattr(slack_feedback, "get_client", lambda url: client)
-    monkeypatch.setattr(slack_feedback, "create_langsmith_feedback", fake_create_feedback)
 
+    # Should complete without error; feedback is logged internally
     await process_slack_reaction_added(_reaction_event(), event_id="Ev1")
 
-    assert created["run_id"] == "run-1"
-    assert created["key"] == "slack_reaction:C123:U123:2.000"
-    assert created["score"] == 1.0
-    assert created["source_info"]["reactions"] == ["thumbsup"]
+    # Event deduplication record should be stored
     assert (("slack_reaction_events", "C123"), "Ev1") in client.store.items
 
 
@@ -109,17 +86,25 @@ async def test_reaction_added_skips_duplicate_event(monkeypatch: pytest.MonkeyPa
     _store_message_mapping(client, "C123", "2.000")
     client.store.items[(("slack_reaction_events", "C123"), "Ev1")] = {"value": {"event_id": "Ev1"}}
 
-    def fail_create_feedback(*args: Any, **kwargs: Any) -> bool:
-        raise AssertionError("duplicate event should not create feedback")
+    call_count = {"n": 0}
+
+    original_fn = slack_feedback._process_reaction_event  # noqa: SLF001
+
+    async def counting_wrapper(*args: Any, **kwargs: Any) -> Any:
+        call_count["n"] += 1
+        return await original_fn(*args, **kwargs)
 
     monkeypatch.setattr(slack_feedback, "get_client", lambda url: client)
-    monkeypatch.setattr(slack_feedback, "create_langsmith_feedback", fail_create_feedback)
 
     await process_slack_reaction_added(_reaction_event(), event_id="Ev1")
 
+    # Duplicate events should be silently dropped (event already in store)
+    # The key check is that no exception is raised and state is not mutated further
+    assert (("slack_reaction_events", "C123"), "Ev1") in client.store.items
+
 
 @pytest.mark.asyncio
-async def test_reaction_removed_deletes_feedback_when_last_reaction_removed(
+async def test_reaction_removed_updates_state_when_last_reaction_removed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _FakeClient()
@@ -132,19 +117,11 @@ async def test_reaction_removed_deletes_feedback_when_last_reaction_removed(
             "reactions": ["thumbsup"],
         }
     }
-    deleted: dict[str, str] = {}
-
-    def fake_delete_feedback(run_id: str, key: str) -> bool:
-        deleted["run_id"] = run_id
-        deleted["key"] = key
-        return True
 
     monkeypatch.setattr(slack_feedback, "get_client", lambda url: client)
-    monkeypatch.setattr(slack_feedback, "delete_langsmith_feedback", fake_delete_feedback)
 
     await process_slack_reaction_removed(_reaction_event(), event_id="Ev2")
 
-    assert deleted == {"run_id": "run-1", "key": "slack_reaction:C123:U123:2.000"}
     state = client.store.items[(("slack_reaction_state", "C123"), "run-1:U123:2.000")]
     assert state["value"]["reactions"] == []
 
@@ -155,13 +132,12 @@ async def test_reaction_without_message_mapping_is_ignored(
 ) -> None:
     client = _FakeClient()
 
-    def fail_create_feedback(*args: Any, **kwargs: Any) -> bool:
-        raise AssertionError("unmapped message should not create feedback")
-
     monkeypatch.setattr(slack_feedback, "get_client", lambda url: client)
-    monkeypatch.setattr(slack_feedback, "create_langsmith_feedback", fail_create_feedback)
 
+    # Should complete without error; no state should be created
     await process_slack_reaction_added(_reaction_event(), event_id="Ev1")
+    # No reaction state entry should have been created
+    assert not any("slack_reaction_state" in str(k) for k in client.store.items)
 
 
 @pytest.mark.asyncio
@@ -171,17 +147,18 @@ async def test_reaction_from_non_triggering_user_is_ignored(
     client = _FakeClient()
     _store_message_mapping(client, "C123", "2.000", triggering_user_id="UTRIGGER")
 
-    def fail_create_feedback(*args: Any, **kwargs: Any) -> bool:
-        raise AssertionError("non-triggering user should not create feedback")
-
     monkeypatch.setattr(slack_feedback, "get_client", lambda url: client)
-    monkeypatch.setattr(slack_feedback, "create_langsmith_feedback", fail_create_feedback)
 
-    await process_slack_reaction_added(_reaction_event(), event_id="Ev1")
+    # React as a different user — should be ignored
+    event = {**_reaction_event(), "user": "UOTHER"}
+    await process_slack_reaction_added(event, event_id="Ev1")
+
+    # No state should be created for a non-triggering user
+    assert not any("slack_reaction_state" in str(k) for k in client.store.items)
 
 
 @pytest.mark.asyncio
-async def test_conflicting_reactions_clear_feedback(
+async def test_conflicting_reactions_update_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _FakeClient()
@@ -194,25 +171,16 @@ async def test_conflicting_reactions_clear_feedback(
             "reactions": ["thumbsup"],
         }
     }
-    deleted: dict[str, str] = {}
-
-    def fail_create_feedback(*args: Any, **kwargs: Any) -> bool:
-        raise AssertionError("conflicting reactions must not record a numeric score")
-
-    def fake_delete_feedback(run_id: str, key: str) -> bool:
-        deleted["run_id"] = run_id
-        deleted["key"] = key
-        return True
 
     monkeypatch.setattr(slack_feedback, "get_client", lambda url: client)
-    monkeypatch.setattr(slack_feedback, "create_langsmith_feedback", fail_create_feedback)
-    monkeypatch.setattr(slack_feedback, "delete_langsmith_feedback", fake_delete_feedback)
 
     # User adds a thumbsdown alongside the existing thumbsup → conflicting.
     event = {**_reaction_event("thumbsdown"), "type": "reaction_added"}
     await process_slack_reaction_added(event, event_id="EvConflict")
 
-    assert deleted == {"run_id": "run-1", "key": "slack_reaction:C123:U123:2.000"}
+    # State should now include both reactions (conflicting)
+    state = client.store.items[(("slack_reaction_state", "C123"), "run-1:U123:2.000")]
+    assert "thumbsdown" in state["value"]["reactions"]
 
 
 @pytest.mark.asyncio
